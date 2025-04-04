@@ -504,6 +504,8 @@ export class Visual implements IVisual {
     /**
      * Calculates the beta coefficient for the relationship between 
      * daily changes in error differences and zspread differences
+     * 
+     * Uses the proper statistical formula: beta = covariance(x,y)/variance(x)
      */
     private calculateBeta(): { beta: number } {
         // Check if we have enough data points
@@ -514,20 +516,38 @@ export class Visual implements IVisual {
         // Skip the first point which doesn't have change values
         const points = this.diffSeries.slice(1);
         
-        // Calculate sum of errorChange * zspreadChange and sum of errorChange^2
-        let sumProduct = 0;
-        let sumErrorChangeSq = 0;
+        // 1. Calculate means
+        let sumX = 0;
+        let sumY = 0;
+        const n = points.length;
         
-        // Simplest form of beta calculation: sum(xy)/sum(x^2)
-        points.forEach(point => {
-            sumProduct += point.errorChange * point.zspreadChange;
-            sumErrorChangeSq += point.errorChange * point.errorChange;
-        });
+        for (let i = 0; i < n; i++) {
+            sumX += points[i].errorChange;
+            sumY += points[i].zspreadChange;
+        }
         
-        // Calculate beta
+        const meanX = sumX / n;
+        const meanY = sumY / n;
+        
+        // 2. Calculate covariance and variance in a single pass
+        let covariance = 0;
+        let variance = 0;
+        
+        for (let i = 0; i < n; i++) {
+            const diffX = points[i].errorChange - meanX;
+            const diffY = points[i].zspreadChange - meanY;
+            
+            covariance += diffX * diffY;
+            variance += diffX * diffX;
+        }
+        
+        covariance /= n;
+        variance /= n;
+        
+        // 3. Calculate beta
         let beta = 0;
-        if (Math.abs(sumErrorChangeSq) > 1e-10) {
-            beta = sumProduct / sumErrorChangeSq;
+        if (Math.abs(variance) > 1e-10) {
+            beta = covariance / variance;
         }
         
         return { beta };
