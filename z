@@ -818,12 +818,11 @@ export class Visual implements IVisual {
             this.renderNonStationaryChart(errorChart, xScale, yScale, lineGen, showTooltip, hideTooltip, bisectDate, chartWidth, innerHeight);
         }
 
-        // Render Z-spread chart
-        this.renderZspreadChart(zspreadChart, xScale, yScale, chartWidth, innerHeight);
+        // Render Z-spread chart - pass the same xScale but create a separate yScale for z-spread data
+        this.renderZspreadChart(zspreadChart, xScale, chartWidth, innerHeight);
 
         // Add axes to both charts
         this.createAxis(errorChart, xScale, yScale, chartWidth, innerHeight);
-        this.createAxis(zspreadChart, xScale, yScale, chartWidth, innerHeight);
     }
 
     /**
@@ -887,16 +886,10 @@ export class Visual implements IVisual {
     /**
      * Renders the zspread chart showing historical zspread_error differences
      * and forecasted values based on the β coefficient
-     * 
-     * The forecast approach:
-     * 1. First forecasts raw zspread differences using the OU process
-     * 2. Then calculates zspread_error forecasts using the simple formula:
-     *    zspread_error_diff = β × zspread_diff
      */
     private renderZspreadChart(
         g: d3.Selection<SVGGElement, unknown, null, undefined>,
         xScale: d3.ScaleTime<number, number>,
-        yScale: d3.ScaleLinear<number, number>,
         innerWidth: number,
         innerHeight: number
     ) {
@@ -990,24 +983,18 @@ export class Visual implements IVisual {
         const dataForScales = this.diffSeriesStationary ? 
             [...zspreadErrorDiffData, ...forecastZspreadErrorData] : zspreadErrorDiffData;
 
-        const zspreadXScale = d3.scaleTime()
-            .domain([
-                d3.min(dataForScales, d => d.inputdate)!,
-                d3.max(dataForScales, d => d.inputdate)!
-            ])
-            .range([0, innerWidth]);
-
+        // Create a proper y-scale based on actual data values
         const zspreadYScale = d3.scaleLinear()
             .domain([
-                d3.min(dataForScales, d => d.value)!,
-                d3.max(dataForScales, d => d.value)!
-            ])
+                d3.min(dataForScales, d => d.value) || 0,
+                d3.max(dataForScales, d => d.value) || 1
+            ].map(v => v * 1.1)) // Add 10% padding to prevent clipping
             .range([innerHeight, 0])
             .nice();
 
-        // Create line generator
+        // Create line generator with the right scales
         const zspreadLineGen = d3.line<{inputdate: Date, value: number}>()
-            .x(d => zspreadXScale(d.inputdate))
+            .x(d => xScale(d.inputdate))
             .y(d => zspreadYScale(d.value))
             .curve(d3.curveMonotoneX);
 
@@ -1053,7 +1040,7 @@ export class Visual implements IVisual {
             .style("fill", "none")
             .style("pointer-events", "all")
             .on("mousemove", (event) => {
-                const mouseX = zspreadXScale.invert(d3.pointer(event)[0]);
+                const mouseX = xScale.invert(d3.pointer(event)[0]);
                 const bisect = d3.bisector<{inputdate: Date, value: number}, Date>(d => d.inputdate).left;
                 
                 // Find the index of the closest point BEFORE the mouse position
@@ -1092,6 +1079,9 @@ export class Visual implements IVisual {
                 }
             })
             .on("mouseout", () => tooltip.style("opacity", 0));
+        
+        // Add y-axis for zspread chart
+        this.createAxis(g, xScale, zspreadYScale, innerWidth, innerHeight);
     }
 
     private renderStationaryChart(
