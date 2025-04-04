@@ -32,7 +32,7 @@ interface DataRow {
     bond1: string;
     bond2: string;
     error: number;
-    zspread: number; // Raw zspread values
+    zspread: number; 
 }
 
 /**
@@ -207,7 +207,6 @@ export class Visual implements IVisual {
         
         // Single DOM manipulation for better performance
         this.target.appendChild(fragment);
-
     }
 
     /**
@@ -286,8 +285,6 @@ export class Visual implements IVisual {
             return null;
         }
         
-        const zspreadValue = parseFloat(String(row[8]));
-        
         return {
             inputdate: dateVal,
             context1: row[1]?.toString() || "",
@@ -296,7 +293,7 @@ export class Visual implements IVisual {
             bond1: row[4]?.toString() || "",
             bond2: row[5]?.toString() || "",
             error: +row[6],
-            zspread: zspreadValue
+            zspread: +row[7]
         };
     }
 
@@ -306,6 +303,8 @@ export class Visual implements IVisual {
     private resetSliders(): void {
         this.lambdaSlider.value = DEFAULT_LAMBDA.toString();
         this.sigmaSlider.value = DEFAULT_SIGMA.toString();
+        (document.getElementById("lambdaValue") as HTMLElement).innerText = DEFAULT_LAMBDA.toString();
+        (document.getElementById("sigmaValue") as HTMLElement).innerText = DEFAULT_SIGMA.toString();
     }
 
     public update(options: VisualUpdateOptions) {
@@ -315,13 +314,19 @@ export class Visual implements IVisual {
         this.currentViewport = options.viewport || { width: 600, height: 300 };
         this.resetSliders();
 
-        this.allData = dataView.table.rows
+        const rows = dataView.table.rows;
+        if (!rows?.length) return;
+
+        // Parse and sort data
+        this.allData = rows
             .map(row => this.parseDataRow(row))
             .filter((row): row is DataRow => row !== null)
             .sort((a, b) => a.inputdate.getTime() - b.inputdate.getTime());
 
+        // Update dropdown with latest P_VALUE rows
         this.updateDropdown();
         
+        // Update chart if data is available
         if (this.allData.length > 0) {
             this.updateChartsInner();
         }
@@ -334,7 +339,10 @@ export class Visual implements IVisual {
      * the dropdown with unique bond pairs for selection
      */
     private updateDropdown(): void {
-        const pValueRows = this.allData.filter(d => d.context1.trim().toUpperCase() === "P_VALUE");
+        // Filter rows with context1 = "P_VALUE"
+        const pValueRows = this.allData.filter(d => 
+            d.context1.trim().toUpperCase() === "P_VALUE"
+        );
 
         if (pValueRows.length === 0) {
             this.dropdownPairs.options.length = 0;
@@ -342,6 +350,7 @@ export class Visual implements IVisual {
             return;
         }
 
+        // Find the most recent date in the P_VALUE rows
         const maxDate = d3.max(pValueRows, d => d.inputdate.getTime())!;
         const latestRows = pValueRows.filter(d => 
             d.inputdate.toDateString() === new Date(maxDate).toDateString()
@@ -375,8 +384,11 @@ export class Visual implements IVisual {
         if (!selectedPair) return;
         
         const [selectedBond1, selectedBond2] = selectedPair.split(" vs ");
+
+        // Clear previous data
         this.diffSeries = [];
         
+        // Filter and compute difference series for both error and zspread
         const errorRows = this.allData.filter(d => 
             d.context1.trim().toUpperCase() === "ERROR" &&
             (d.bond1.trim() === selectedBond1.trim() || d.bond1.trim() === selectedBond2.trim())
@@ -387,7 +399,10 @@ export class Visual implements IVisual {
         
         errorRows.forEach(d => {
             const key = d.inputdate.toDateString();
-            const value = { error: d.error, zspread: d.zspread };
+            const value = { 
+                error: d.error, 
+                zspread: d.zspread
+            };
             
             if (d.bond1.trim() === selectedBond1.trim()) {
                 mapBond1.set(key, value);
@@ -396,20 +411,32 @@ export class Visual implements IVisual {
             }
         });
 
-        const commonDates = Array.from(mapBond1.keys()).filter(key => mapBond2.has(key));
+        // Collect dates where both bonds have data
+        const commonDates: string[] = [];
+        mapBond1.forEach((_, key) => {
+            if (mapBond2.has(key)) {
+                commonDates.push(key);
+            }
+        });
+        
+        // Sort dates chronologically
         commonDates.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
         
+        // Create diffSeries with differences and daily changes
         for (let i = 0; i < commonDates.length; i++) {
             const key = commonDates[i];
             const val1 = mapBond1.get(key)!;
             const val2 = mapBond2.get(key)!;
             
+            // Calculate differences for current day
             const errorDiff = val2.error - val1.error;
             const zspreadDiff = val2.zspread - val1.zspread;
             
+            // Initialize daily changes (will be set in next loop iteration if not the first point)
             let errorChange = 0;
             let zspreadChange = 0;
             
+            // For points beyond the first one, calculate daily changes
             if (i > 0) {
                 const prevKey = commonDates[i-1];
                 const prevVal1 = mapBond1.get(prevKey)!;
@@ -420,12 +447,15 @@ export class Visual implements IVisual {
                 errorChange = errorDiff - prevErrorDiff;
                 zspreadChange = zspreadDiff - prevZspreadDiff;
                 
+                // Update previous point's change values since we now know them
                 if (i === 1) {
+                    // For the first point, set changes to 0
                     this.diffSeries[0].errorChange = 0;
                     this.diffSeries[0].zspreadChange = 0;
                 }
             }
             
+            // Add the current point
             this.diffSeries.push({
                 inputdate: new Date(key),
                 diff: errorDiff,
@@ -442,9 +472,11 @@ export class Visual implements IVisual {
             return;
         }
 
+        // Calculate beta coefficient
         const { beta } = this.calculateBeta();
         this.beta = beta;
 
+        // Apply ADF test to check for stationarity of error_diff
         const diffs = this.diffSeries.map(d => d.diff);
         this.diffSeriesStationary = this.performADFTest(diffs);
         
@@ -456,82 +488,139 @@ export class Visual implements IVisual {
      * daily changes in error differences and zspread differences
      */
     private calculateBeta(): { beta: number } {
-        if (this.diffSeries.length < 2) return { beta: 0 };
+        // Check if we have enough data points
+        if (this.diffSeries.length < 2) {
+            return { beta: 0 };
+        }
         
+        // Skip the first point which doesn't have change values
         const points = this.diffSeries.slice(1);
+        
+        // Calculate sum of errorChange * zspreadChange and sum of errorChange^2
         let sumProduct = 0;
         let sumErrorChangeSq = 0;
         
+        // Simplest form of beta calculation: sum(xy)/sum(x^2)
         points.forEach(point => {
             sumProduct += point.errorChange * point.zspreadChange;
             sumErrorChangeSq += point.errorChange * point.errorChange;
         });
         
-        return { beta: Math.abs(sumErrorChangeSq) > 1e-10 ? sumProduct / sumErrorChangeSq : 0 };
+        // Calculate beta
+        let beta = 0;
+        if (Math.abs(sumErrorChangeSq) > 1e-10) {
+            beta = sumProduct / sumErrorChangeSq;
+        }
+        
+        return { beta };
     }
 
+    // Update the ADF test implementation with better comments
     private performADFTest = memoize((data: number[]): boolean => {
         if (data.length < 3) return false;
         
+        // ADF test equation: Δy_t = α + βy_{t-1} + ε_t
+        // where β = ρ - 1 and ρ is the autoregressive coefficient
+        
+        // Create first difference series (Δy_t)
         const dX = data.slice(1).map((val, i) => val - data[i]);
+        // Create lagged series (y_{t-1})
         const lagX = data.slice(0, -1);
+        
+        // Calculate means for demeaning
         const meanLag = d3.mean(lagX)!;
         const meanDX = d3.mean(dX)!;
         
-        const num = dX.reduce((sum, val, i) => sum + (lagX[i] - meanLag) * (val - meanDX), 0);
-        const den = lagX.reduce((sum, val) => sum + Math.pow(val - meanLag, 2), 0);
+        // Calculate numerator for the slope coefficient: Σ(y_{t-1} - mean_y)(Δy_t - mean_Δy)
+        const num = dX.reduce((sum, val, i) => 
+            sum + (lagX[i] - meanLag) * (val - meanDX), 0);
+        // Calculate denominator: Σ(y_{t-1} - mean_y)²
+        const den = lagX.reduce((sum, val) => 
+            sum + Math.pow(val - meanLag, 2), 0);
+            
+        // Calculate slope coefficient β
         const slope = num / den;
-        const ssr = dX.reduce((sum, val, i) => sum + Math.pow(val - slope * lagX[i], 2), 0);
-        const s2 = ssr / (dX.length - 2);
-        const se = Math.sqrt(s2 / den);
         
-        return slope / se < ADF_THRESHOLD;
+        // Calculate sum of squared residuals for standard error
+        const ssr = dX.reduce((sum, val, i) => 
+            sum + Math.pow(val - slope * lagX[i], 2), 0);
+            
+        // Calculate variance of residuals
+        const s2 = ssr / (dX.length - 2);
+        // Calculate standard error of slope coefficient
+        const se = Math.sqrt(s2 / den);
+        // Calculate t-statistic (Dickey-Fuller test statistic)
+        const tStat = slope / se;
+        
+        // Compare against critical value ADF_THRESHOLD (typically -3)
+        // If t-statistic < threshold, reject null hypothesis of unit root (non-stationarity)
+        return tStat < ADF_THRESHOLD;
     });
 
+    /**
+     * Calculates Ornstein-Uhlenbeck process parameters and generates forecast points
+     */
     private calculateOUParameters(diffValues: number[], dates: Date[]): OUResults {
+        // Only compute when we have enough data
         if (diffValues.length < 2) {
-            return { lambda: 0, mu: 0, sigma: 0, forecastPoints: [], upperBoundPoints: [], lowerBoundPoints: [] };
+            return {
+                lambda: 0,
+                mu: 0,
+                sigma: 0,
+                forecastPoints: [],
+                upperBoundPoints: [],
+                lowerBoundPoints: []
+            };
         }
         
         const n = diffValues.length - 1;
+        // Calculate long-term mean
         const diffMean = d3.mean(diffValues)!;
-        const totalTimeSpan = dates[dates.length - 1].getTime() - dates[0].getTime();
+        
+        // Calculate time parameters
+        const totalTimeSpan = (dates[dates.length - 1].getTime() - dates[0].getTime());
         const delta = totalTimeSpan / n;
         const deltaDays = delta / (1000 * 60 * 60 * 24);
         
+        // Calculate auto-correlation coefficient
         const deviations = diffValues.map(val => val - diffMean);
         let num = 0;
         let den = 0;
-        
         for (let i = 0; i < n; i++) {
             num += deviations[i+1] * deviations[i];
             den += deviations[i] * deviations[i];
         }
-        
-        const alphaHat = Math.max(Math.min(num / den, 0.9999999), -0.9999999);
+        let alphaHat = Math.max(Math.min(num / den, 0.9999999), -0.9999999);
+
+        // Calculate mean reversion rate
         const lambdaHat = -Math.log(alphaHat) / deltaDays;
         
+        // Calculate long-term mean using residuals
         let sumResidual = 0;
         for (let i = 0; i < n; i++) {
             sumResidual += diffValues[i+1] - alphaHat * diffValues[i];
         }
         const muHat = sumResidual / (n * (1 - alphaHat));
 
+        // Calculate volatility
         let sumSq = 0;
         for (let i = 0; i < n; i++) {
             const r = diffValues[i+1] - alphaHat * diffValues[i] - (1 - alphaHat) * muHat;
             sumSq += r * r;
         }
-        
         const sigmaSqHat = (2 * lambdaHat) / (1 - alphaHat * alphaHat) * (1 / n) * sumSq;
         const sigmaHat = Math.sqrt(Math.max(sigmaSqHat, 0));
 
+        // Apply user-adjustable scaling factors
         const lambdaFactor = parseFloat(this.lambdaSlider.value);
         const sigmaFactor = parseFloat(this.sigmaSlider.value);
         const newLambda = lambdaHat * lambdaFactor;
         const newSigma = sigmaHat * sigmaFactor;
+        
+        // Calculate discrete-time alpha with adjusted lambda
         const alpha = Math.exp(-newLambda * deltaDays);
 
+        // Generate forecast points
         const lastDiff = diffValues[diffValues.length - 1];
         const lastTime = dates[dates.length - 1].getTime();
         
@@ -539,223 +628,671 @@ export class Visual implements IVisual {
         const upperBoundPoints: DiffPoint[] = [];
         const lowerBoundPoints: DiffPoint[] = [];
 
+        // Create forecast points
         for (let i = 0; i <= FORECAST_STEPS; i++) {
             const nextDate = new Date(lastTime + i * delta);
             const alphaPow = Math.pow(alpha, i);
+            
+            // Mean forecast
             const meanForecast = muHat + (lastDiff - muHat) * alphaPow;
+            
+            // Variance forecast
             const varForecast = (newSigma * newSigma) / (2 * newLambda) * (1 - Math.pow(alpha, 2 * i));
             const stdDev = Math.sqrt(varForecast);
             
-            const basePoint = {
-                inputdate: nextDate,
+            // Create forecast points with confidence intervals
+            forecastPoints.push({ 
+                inputdate: nextDate, 
+                diff: meanForecast, 
                 errorChange: 0,
                 zspreadRaw1: 0,
                 zspreadRaw2: 0,
                 zspreadDiff: 0,
                 zspreadChange: 0
-            };
+            });
             
-            forecastPoints.push({ ...basePoint, diff: meanForecast });
-            upperBoundPoints.push({ ...basePoint, diff: meanForecast + 1.96 * stdDev });
-            lowerBoundPoints.push({ ...basePoint, diff: meanForecast - 1.96 * stdDev });
+            upperBoundPoints.push({ 
+                inputdate: nextDate, 
+                diff: meanForecast + 1.96 * stdDev, 
+                errorChange: 0,
+                zspreadRaw1: 0,
+                zspreadRaw2: 0,
+                zspreadDiff: 0,
+                zspreadChange: 0
+            });
+            
+            lowerBoundPoints.push({ 
+                inputdate: nextDate, 
+                diff: meanForecast - 1.96 * stdDev, 
+                errorChange: 0,
+                zspreadRaw1: 0,
+                zspreadRaw2: 0,
+                zspreadDiff: 0,
+                zspreadChange: 0
+            });
         }
 
-        return { lambda: newLambda, mu: muHat, sigma: newSigma, forecastPoints, upperBoundPoints, lowerBoundPoints };
+        return {
+            lambda: newLambda,
+            mu: muHat,
+            sigma: newSigma,
+            forecastPoints,
+            upperBoundPoints,
+            lowerBoundPoints
+        };
     }
 
+    // Add utility methods for common chart operations
+    private createChartElements(width: number, height: number, chartWidth: number, innerHeight: number) {
+        // Clear previous chart
+        this.svg.selectAll("*").remove();
+        this.svg.attr("width", width).attr("height", height);
+
+        // Create main chart group for error chart
+        const errorChart = this.svg.append("g")
+            .attr("transform", `translate(${CHART_MARGINS.left}, ${CHART_MARGINS.top})`);
+
+        // Create second chart group for zspread chart
+        const zspreadChart = this.svg.append("g")
+            .attr("transform", `translate(${CHART_MARGINS.left + chartWidth + CHART_SPACING}, ${CHART_MARGINS.top})`);
+
+        return { errorChart, zspreadChart };
+    }
+
+    private createAxis(
+        g: d3.Selection<SVGGElement, unknown, null, undefined>,
+        xScale: d3.ScaleTime<number, number>,
+        yScale: d3.ScaleLinear<number, number>,
+        innerWidth: number,
+        innerHeight: number
+    ) {
+        // Create x-axis with adaptive tick count based on available width
+        const tickCount = Math.max(2, Math.floor(innerWidth / 100));
+        const xAxis = d3.axisBottom(xScale)
+            .ticks(tickCount)
+            .tickFormat(d3.timeFormat("%b %d, %Y"));
+            
+        const xAxisGroup = g.append("g")
+            .attr("transform", `translate(0, ${innerHeight})`)
+            .call(xAxis);
+
+        // Style x-axis text labels
+        xAxisGroup.selectAll("text")
+            .attr("transform", "rotate(-20)")
+            .style("text-anchor", "end")
+            .style("font-size", "10px")
+            .style("fill", "#666")
+            .attr("dy", "1em")
+            .attr("dx", "-0.5em");
+
+        // Style x-axis lines and path
+        xAxisGroup.selectAll("line, path")
+            .style("stroke", "#ddd")
+            .style("stroke-width", "1px");
+
+        // Create and style y-axis with 5 ticks
+        const yAxis = d3.axisLeft(yScale).ticks(5);
+        const yAxisGroup = g.append("g").call(yAxis);
+
+        // Style y-axis text labels
+        yAxisGroup.selectAll("text")
+            .style("font-size", "10px")
+            .style("fill", "#666");
+
+        // Style y-axis lines and path
+        yAxisGroup.selectAll("line, path")
+            .style("stroke", "#ddd")
+            .style("stroke-width", "1px");
+    }
+
+    /**
+     * Main chart rendering method
+     * 
+     * Orchestrates the rendering of both charts:
+     * 1. Error difference chart with OU process forecasts
+     * 2. Z-spread error difference chart with beta-based forecasts
+     * 
+     * The rendering approach depends on whether the series is stationary,
+     * which determines if forecasting can be applied.
+     */
     private renderChart(isStationary: boolean) {
+        // Set up dimensions for two charts side by side
         const width = this.currentViewport.width;
         const height = this.currentViewport.height;
         const totalWidth = width - CHART_MARGINS.left - CHART_MARGINS.right;
         const chartWidth = (totalWidth - CHART_SPACING) / 2;
         const innerHeight = height - CHART_MARGINS.top - CHART_MARGINS.bottom;
 
-        this.svg.selectAll("*").remove();
-        this.svg.attr("width", width).attr("height", height);
+        // Create chart elements
+        const { errorChart, zspreadChart } = this.createChartElements(width, height, chartWidth, innerHeight);
 
-        const errorChart = this.svg.append("g")
-            .attr("transform", `translate(${CHART_MARGINS.left}, ${CHART_MARGINS.top})`);
-        const zspreadChart = this.svg.append("g")
-            .attr("transform", `translate(${CHART_MARGINS.left + chartWidth + CHART_SPACING}, ${CHART_MARGINS.top})`);
+        // Add error chart title
+        errorChart.append("text")
+            .attr("x", 10)
+            .attr("y", -35)
+            .attr("text-anchor", "start")
+            .style("font-size", "14px")
+            .style("font-weight", "bold")
+            .style("font-family", "Arial, sans-serif")
+            .style("fill", "#00818F")
+            .text("Error Difference");
 
+        // Check for data
         if (this.diffSeries.length < 1) {
-            this.renderEmptyChart(errorChart, chartWidth, innerHeight);
+            errorChart.append("text")
+                .attr("x", chartWidth / 2)
+                .attr("y", innerHeight / 2)
+                .attr("text-anchor", "middle")
+                .attr("fill", "red")
+                .style("font-size", "14px")
+                .text("No data to display.");
             return;
         }
 
+        // Create scales and line generator for error chart
         const { xScale, yScale } = this.createScales(isStationary, chartWidth, innerHeight);
-        this.renderErrorChart(errorChart, xScale, yScale, chartWidth, innerHeight, isStationary);
+        const lineGen = d3.line<DiffPoint>()
+            .x(d => xScale(d.inputdate))
+            .y(d => yScale(d.diff))
+            .curve(d3.curveMonotoneX);
+
+        // Create tooltip behavior
+        const tooltip = d3.select("#tooltip");
+        const bisectDate = d3.bisector<DiffPoint, Date>(d => d.inputdate).left;
+
+        const showTooltip = (event: MouseEvent, d: DiffPoint) => {
+            tooltip
+                .style("opacity", 1)
+                .style("left", (event.pageX + 10) + "px")
+                .style("top", (event.pageY - 10) + "px")
+                .html(`Date: ${d.inputdate.toLocaleDateString()}<br/>Value: ${d.diff.toFixed(4)}`);
+        };
+
+        const hideTooltip = () => {
+            tooltip.style("opacity", 0);
+        };
+
+        // Render appropriate chart based on stationarity
+        if (isStationary) {
+            this.renderStationaryChart(errorChart, xScale, yScale, lineGen, showTooltip, hideTooltip, bisectDate, chartWidth, innerHeight);
+        } else {
+            this.renderNonStationaryChart(errorChart, xScale, yScale, lineGen, showTooltip, hideTooltip, bisectDate, chartWidth, innerHeight);
+        }
+
+        // Render Z-spread chart - pass the same xScale but create a separate yScale for z-spread data
         this.renderZspreadChart(zspreadChart, xScale, chartWidth, innerHeight);
+
+        // Add axes to both charts
+        this.createAxis(errorChart, xScale, yScale, chartWidth, innerHeight);
     }
 
-    private renderEmptyChart(g: d3.Selection<SVGGElement, unknown, null, undefined>, width: number, height: number) {
-        g.append("text")
-            .attr("x", width / 2)
-            .attr("y", height / 2)
-            .attr("text-anchor", "middle")
-            .attr("fill", "red")
-            .style("font-size", "14px")
-            .text("No data to display.");
-    }
-
-    private createScales(isStationary: boolean, width: number, height: number) {
+    /**
+     * Creates scales for the charts based on data and stationarity
+     * 
+     * For stationary series, the scales include both historical and forecast data.
+     * For non-stationary series, only historical data is used.
+     */
+    private createScales(isStationary: boolean, innerWidth: number, innerHeight: number) {
         let xScale: d3.ScaleTime<number, number>;
         let yScale: d3.ScaleLinear<number, number>;
 
         if (isStationary) {
+            // For stationary series, calculate OU parameters and include forecast range
             const ouResults = this.calculateOUParameters(
                 this.diffSeries.map(d => d.diff),
                 this.diffSeries.map(d => d.inputdate)
             );
 
+            // Combine historical and forecast data points for domain calculation
             const allX = this.diffSeries.map(d => d.inputdate)
                 .concat(ouResults.forecastPoints.map(d => d.inputdate));
             
+            // Include confidence bounds in y-domain calculation
             const allY = this.diffSeries.map(d => d.diff)
                 .concat(ouResults.forecastPoints.map(d => d.diff))
                 .concat(ouResults.upperBoundPoints.map(d => d.diff))
                 .concat(ouResults.lowerBoundPoints.map(d => d.diff));
 
+            // Create time scale for x-axis
             xScale = d3.scaleTime()
                 .domain([d3.min(allX) as Date, d3.max(allX) as Date])
-                .range([0, width]);
+                .range([0, innerWidth]);
 
+            // Create linear scale for y-axis with nice rounding
             yScale = d3.scaleLinear()
                 .domain([d3.min(allY) as number, d3.max(allY) as number])
-                .range([height, 0])
+                .range([innerHeight, 0])
                 .nice();
         } else {
+            // For non-stationary series, use only historical data
             xScale = d3.scaleTime()
                 .domain([
                     d3.min(this.diffSeries, d => d.inputdate)!,
                     d3.max(this.diffSeries, d => d.inputdate)!
                 ])
-                .range([0, width]);
+                .range([0, innerWidth]);
 
             yScale = d3.scaleLinear()
                 .domain([
                     d3.min(this.diffSeries, d => d.diff) as number,
                     d3.max(this.diffSeries, d => d.diff) as number
                 ])
-                .range([height, 0])
+                .range([innerHeight, 0])
                 .nice();
         }
 
         return { xScale, yScale };
     }
 
-    private renderErrorChart(
+    /**
+     * Renders the zspread chart showing historical zspread differences
+     * and forecasted values based on the β coefficient applied to error changes
+     */
+    private renderZspreadChart(
         g: d3.Selection<SVGGElement, unknown, null, undefined>,
         xScale: d3.ScaleTime<number, number>,
-        yScale: d3.ScaleLinear<number, number>,
-        width: number,
-        height: number,
-        isStationary: boolean
+        innerWidth: number,
+        innerHeight: number
     ) {
-        const lineGen = d3.line<DiffPoint>()
-            .x(d => xScale(d.inputdate))
-            .y(d => yScale(d.diff))
-            .curve(d3.curveMonotoneX);
+        // Clear any existing content
+        g.selectAll("*").remove();
 
-        if (isStationary) {
+        // Add Z-Spread chart title
+        g.append("text")
+            .attr("x", 10)
+            .attr("y", -35)
+            .attr("text-anchor", "start")
+            .style("font-size", "14px")
+            .style("font-weight", "bold")
+            .style("font-family", "Arial, sans-serif")
+            .style("fill", "#00818F")
+            .text("Z-Spread Difference (Forecast via OU Error Changes)");
+
+        // Extract data for plotting
+        const zspreadDiffData = this.diffSeries.map(d => ({
+            inputdate: d.inputdate,
+            value: d.zspreadDiff      // Historical zspread differences
+        }));
+
+        if (zspreadDiffData.length === 0) {
+            g.append("text")
+                .attr("x", innerWidth / 2)
+                .attr("y", innerHeight / 2)
+                .attr("text-anchor", "middle")
+                .style("font-size", "14px")
+                .style("fill", "#666")
+                .text("No zspread data available");
+            return;
+        }
+
+        // Get beta coefficient
+        const { beta } = this.calculateBeta();
+        this.beta = beta;
+
+        // Prepare arrays for forecast data points
+        let forecastZspreadDiffData: {inputdate: Date, value: number}[] = [];
+        
+        if (this.diffSeriesStationary) {
+            // Get OU parameters and forecasts for the error series
             const ouResults = this.calculateOUParameters(
                 this.diffSeries.map(d => d.diff),
                 this.diffSeries.map(d => d.inputdate)
             );
-
-            g.append("path")
-                .datum(ouResults.lowerBoundPoints)
-                .attr("fill", "none")
-                .attr("stroke", "grey")
-                .attr("stroke-width", 1)
-                .style("stroke-dasharray", "3,3")
-                .attr("d", lineGen);
-
-            g.append("path")
-                .datum(ouResults.upperBoundPoints)
-                .attr("fill", "none")
-                .attr("stroke", "grey")
-                .attr("stroke-width", 1)
-                .style("stroke-dasharray", "3,3")
-                .attr("d", lineGen);
-
-            g.append("path")
-                .datum(ouResults.forecastPoints)
-                .attr("fill", "none")
-                .attr("stroke", "orange")
-                .attr("stroke-width", 2)
-                .attr("d", lineGen);
+            
+            // Extract the last historical error difference value
+            const lastErrorDiff = this.diffSeries[this.diffSeries.length - 1].diff;
+            // Extract the last historical z-spread difference value
+            const lastZspreadDiff = this.diffSeries[this.diffSeries.length - 1].zspreadDiff;
+            
+            // Get the OU process parameters from the left chart
+            const mu = ouResults.mu;          // Long-term mean for error_diff
+            const lambda = ouResults.lambda;  // Mean-reversion rate
+            
+            // Calculate time step in days
+            const lastTime = this.diffSeries[this.diffSeries.length - 1].inputdate.getTime();
+            const delta = ouResults.forecastPoints.length > 1 
+                ? (ouResults.forecastPoints[1].inputdate.getTime() - ouResults.forecastPoints[0].inputdate.getTime()) / (1000 * 60 * 60 * 24)
+                : 1; // default to 1 day if we can't calculate
+            
+            // Start with the last historical zspread_diff value
+            let currentZspreadDiff = lastZspreadDiff;
+            let currentErrorDiff = lastErrorDiff;
+            
+            // Generate zspread_diff forecasts using the OU error change model
+            // First point is special - we need to connect from the last historical point
+            if (ouResults.forecastPoints.length > 0) {
+                const firstForecastPoint = ouResults.forecastPoints[0];
+                
+                // Expected change from OU process
+                const expectedErrorChange = lambda * (mu - lastErrorDiff) * delta;
+                
+                // Apply beta to translate error change to zspread change
+                const zspreadChange = beta * expectedErrorChange;
+                currentZspreadDiff += zspreadChange;
+                currentErrorDiff = firstForecastPoint.diff;
+                
+                forecastZspreadDiffData.push({
+                    inputdate: firstForecastPoint.inputdate,
+                    value: currentZspreadDiff
+                });
+                
+                // Now process the rest of the forecast points
+                for (let i = 1; i < ouResults.forecastPoints.length; i++) {
+                    const forecastPoint = ouResults.forecastPoints[i];
+                    const prevErrorDiff = currentErrorDiff;
+                    currentErrorDiff = forecastPoint.diff;
+                    
+                    // Expected change from OU process at this step
+                    const expectedErrorChange = lambda * (mu - prevErrorDiff) * delta;
+                    
+                    // Apply beta to translate error change to zspread change
+                    const zspreadChange = beta * expectedErrorChange;
+                    currentZspreadDiff += zspreadChange;
+                    
+                    forecastZspreadDiffData.push({
+                        inputdate: forecastPoint.inputdate,
+                        value: currentZspreadDiff
+                    });
+                }
+            }
         }
 
-        g.append("path")
-            .datum(this.diffSeries)
-            .attr("fill", "none")
-            .attr("stroke", "#00818F")
-            .attr("stroke-width", 2)
-            .attr("d", lineGen);
+        // Display the beta coefficient and explain the relationship
+        g.append("text")
+            .attr("x", 10)
+            .attr("y", -10)
+            .attr("fill", "#333")
+            .style("font-size", "12px")
+            .text(`β = ${beta.toFixed(4)} (Δzspread_diff = β × OU(Δerror_diff))`);
 
-        this.addAxes(g, xScale, yScale, width, height);
-    }
-
-    private renderZspreadChart(
-        g: d3.Selection<SVGGElement, unknown, null, undefined>,
-        xScale: d3.ScaleTime<number, number>,
-        width: number,
-        height: number
-    ) {
-        const zspreadDiffData = this.diffSeries.map(d => ({
-            inputdate: d.inputdate,
-            value: d.zspreadDiff
-        }));
-
-        if (zspreadDiffData.length === 0) {
-            this.renderEmptyChart(g, width, height);
-            return;
-        }
-
-        const yScale = d3.scaleLinear()
-            .domain([
-                d3.min(zspreadDiffData, d => d.value) as number,
-                d3.max(zspreadDiffData, d => d.value) as number
-            ])
-            .range([height, 0])
+        // Create scales for the chart
+        const dataForScales = this.diffSeriesStationary ? 
+            [...zspreadDiffData, ...forecastZspreadDiffData] : zspreadDiffData;
+        
+        // Create a proper y-scale with appropriate padding
+        const values = dataForScales.map(d => d.value);
+        const yMin = d3.min(values) || 0;
+        const yMax = d3.max(values) || 1;
+        
+        // Ensure the domain has some span (at least 10% of the data range or 0.1, whichever is larger)
+        const range = Math.max(0.1, Math.abs(yMax - yMin));
+        const padding = range * 0.1; // 10% padding
+        
+        const zspreadYScale = d3.scaleLinear()
+            .domain([yMin - padding, yMax + padding])
+            .range([innerHeight, 0])
             .nice();
 
-        const lineGen = d3.line<{inputdate: Date, value: number}>()
+        // Create line generator with the right scales
+        const zspreadLineGen = d3.line<{inputdate: Date, value: number}>()
             .x(d => xScale(d.inputdate))
-            .y(d => yScale(d.value))
+            .y(d => zspreadYScale(d.value))
             .curve(d3.curveMonotoneX);
 
+        // Draw historical zspread line
         g.append("path")
             .datum(zspreadDiffData)
             .attr("fill", "none")
             .attr("stroke", "#00818F")
             .attr("stroke-width", 2)
-            .attr("d", lineGen);
+            .style("stroke-dasharray", "0")
+            .attr("d", zspreadLineGen);
 
-        this.addAxes(g, xScale, yScale, width, height);
+        // Draw forecast line if we have stationary data and forecast points
+        if (this.diffSeriesStationary && forecastZspreadDiffData.length > 0) {
+            const lastHistoricalPoint = zspreadDiffData[zspreadDiffData.length - 1];
+            const combinedData = [lastHistoricalPoint, ...forecastZspreadDiffData];
+            
+            g.append("path")
+                .datum(combinedData)
+                .attr("fill", "none")
+                .attr("stroke", "orange")
+                .attr("stroke-width", 2)
+                .style("stroke-dasharray", "0")
+                .attr("d", zspreadLineGen);
+        }
+
+        // Add status text
+        g.append("text")
+            .attr("x", innerWidth - 10)
+            .attr("y", -10)
+            .attr("text-anchor", "end")
+            .attr("fill", this.diffSeriesStationary ? "green" : "red")
+            .style("font-size", "12px")
+            .text(this.diffSeriesStationary ? 
+                "OU Error changes → Z-Spread forecast" : 
+                "Series non-stationary. No forecast.");
+
+        // Add tooltip interaction with improved accuracy
+        const tooltip = d3.select("#tooltip");
+        
+        g.append("rect")
+            .attr("width", innerWidth)
+            .attr("height", innerHeight)
+            .style("fill", "none")
+            .style("pointer-events", "all")
+            .on("mousemove", (event) => {
+                const mouseX = xScale.invert(d3.pointer(event)[0]);
+                const bisect = d3.bisector<{inputdate: Date, value: number}, Date>(d => d.inputdate).left;
+                
+                // Find the index of the closest point BEFORE the mouse position
+                const index = bisect(zspreadDiffData, mouseX) - 1;
+                
+                // Make sure the index is valid
+                if (index >= 0 && index < zspreadDiffData.length) {
+                    const histPoint = zspreadDiffData[index];
+                    
+                    // Check if we're in the forecast region
+                    const lastHistDate = zspreadDiffData[zspreadDiffData.length - 1].inputdate;
+                    
+                    if (mouseX > lastHistDate && this.diffSeriesStationary && forecastZspreadDiffData.length > 0) {
+                        // We're in the forecast region - find the closest forecast point
+                        const forecastIndex = bisect(forecastZspreadDiffData, mouseX) - 1;
+                        if (forecastIndex >= 0 && forecastIndex < forecastZspreadDiffData.length) {
+                            const forecastPoint = forecastZspreadDiffData[forecastIndex];
+                            tooltip
+                                .style("opacity", 1)
+                                .style("left", (event.pageX + 10) + "px")
+                                .style("top", (event.pageY - 10) + "px")
+                                .html(`Forecast Z-Spread Difference:<br/>
+                                    Date: ${forecastPoint.inputdate.toLocaleDateString()}<br/>
+                                    Value: ${forecastPoint.value.toFixed(4)}`);
+                        }
+                    } else {
+                        // We're in the historical region
+                        tooltip
+                            .style("opacity", 1)
+                            .style("left", (event.pageX + 10) + "px")
+                            .style("top", (event.pageY - 10) + "px")
+                            .html(`Historical Z-Spread Difference:<br/>
+                                Date: ${histPoint.inputdate.toLocaleDateString()}<br/>
+                                Value: ${histPoint.value.toFixed(4)}`);
+                    }
+                }
+            })
+            .on("mouseout", () => tooltip.style("opacity", 0));
+        
+        // Add y-axis for zspread chart
+        this.createAxis(g, xScale, zspreadYScale, innerWidth, innerHeight);
     }
 
-    private addAxes(
+    private renderStationaryChart(
         g: d3.Selection<SVGGElement, unknown, null, undefined>,
         xScale: d3.ScaleTime<number, number>,
         yScale: d3.ScaleLinear<number, number>,
-        width: number,
-        height: number
+        lineGen: d3.Line<DiffPoint>,
+        showTooltip: (event: MouseEvent, d: DiffPoint) => void,
+        hideTooltip: () => void,
+        bisectDate: (arr: DiffPoint[], x: Date) => number,
+        innerWidth: number,
+        innerHeight: number
     ) {
-        const xAxis = d3.axisBottom(xScale)
-            .ticks(Math.max(2, Math.floor(width / 100)))
-            .tickFormat(d3.timeFormat("%b %d, %Y"));
+        const ouResults = this.calculateOUParameters(
+            this.diffSeries.map(d => d.diff),
+            this.diffSeries.map(d => d.inputdate)
+        );
 
-        g.append("g")
-            .attr("transform", `translate(0, ${height})`)
-            .call(xAxis)
-            .selectAll("text")
-            .attr("transform", "rotate(-20)")
-            .style("text-anchor", "end")
-            .style("font-size", "10px");
+        // Store parameters
+        this.lambdaHat = ouResults.lambda;
+        this.muHat = ouResults.mu;
+        this.sigmaHat = ouResults.sigma;
 
-        const yAxis = d3.axisLeft(yScale).ticks(5);
-        g.append("g").call(yAxis);
+        // Display parameter estimates
+        g.append("text")
+            .attr("x", 10)
+            .attr("y", -10)
+            .attr("fill", "#333")
+            .style("font-size", "12px")
+            .text(`μ = ${this.muHat.toFixed(2)}, λ = ${this.lambdaHat.toFixed(2)} (×${this.lambdaSlider.value}), σ = ${this.sigmaHat.toFixed(2)} (×${this.sigmaSlider.value})`);
+
+        // Add status text
+        g.append("text")
+            .attr("x", innerWidth - 10)
+            .attr("y", -10)
+            .attr("text-anchor", "end")
+            .style("fill", "green")
+            .style("font-size", "12px")
+            .text("ADF passed: Series stationary. OU applied.");
+
+        // Draw forecast confidence bands
+        g.append("path")
+            .datum(ouResults.lowerBoundPoints)
+            .attr("fill", "none")
+            .attr("stroke", "grey")
+            .attr("stroke-width", 1)
+            .style("stroke-dasharray", "3,3")
+            .attr("d", lineGen);
+
+        g.append("path")
+            .datum(ouResults.upperBoundPoints)
+            .attr("fill", "none")
+            .attr("stroke", "grey")
+            .attr("stroke-width", 1)
+            .style("stroke-dasharray", "3,3")
+            .attr("d", lineGen);
+
+        // Draw forecast mean line
+        g.append("path")
+            .datum(ouResults.forecastPoints)
+            .attr("fill", "none")
+            .attr("stroke", "orange")
+            .attr("stroke-width", 2)
+            .style("stroke-dasharray", "0")
+            .attr("d", lineGen);
+
+        // Draw historical data line
+        g.append("path")
+            .datum(this.diffSeries)
+            .attr("fill", "none")
+            .attr("stroke", "#00818F")
+            .attr("stroke-width", 2)
+            .style("stroke-dasharray", "0")
+            .attr("d", lineGen);
+
+        // Add tooltip interaction overlay for the entire chart area
+        const overlay = g.append("rect")
+            .attr("width", innerWidth)
+            .attr("height", innerHeight)
+            .style("fill", "none")
+            .style("pointer-events", "all")
+            .on("mousemove", (event) => {
+                const mouseX = xScale.invert(d3.pointer(event)[0]);
+                
+                // Find the closest point in historical data
+                const histIndex = bisectDate(this.diffSeries, mouseX);
+                const histPoint = this.diffSeries[histIndex];
+                
+                // Find the closest point in forecast data
+                const forecastIndex = bisectDate(ouResults.forecastPoints, mouseX);
+                const forecastPoint = ouResults.forecastPoints[forecastIndex];
+                
+                // Find the closest points in upper and lower bounds
+                const upperPoint = ouResults.upperBoundPoints[forecastIndex];
+                const lowerPoint = ouResults.lowerBoundPoints[forecastIndex];
+
+                // Determine which point to show based on which is closer to the mouse
+                let tooltipContent = "";
+                
+                if (histPoint && forecastPoint) {
+                    const histDist = Math.abs(histPoint.inputdate.getTime() - mouseX.getTime());
+                    const forecastDist = Math.abs(forecastPoint.inputdate.getTime() - mouseX.getTime());
+                    
+                    if (histDist < forecastDist) {
+                        tooltipContent = `Historical Data:<br/>
+                            Date: ${histPoint.inputdate.toLocaleDateString()}<br/>
+                            Value: ${histPoint.diff.toFixed(4)}`;
+                    } else {
+                        tooltipContent = `Forecast:<br/>
+                            Date: ${forecastPoint.inputdate.toLocaleDateString()}<br/>
+                            Value: ${forecastPoint.diff.toFixed(4)}<br/>
+                            Upper Bound: ${upperPoint.diff.toFixed(4)}<br/>
+                            Lower Bound: ${lowerPoint.diff.toFixed(4)}`;
+                    }
+                } else if (histPoint) {
+                    tooltipContent = `Historical Data:<br/>
+                        Date: ${histPoint.inputdate.toLocaleDateString()}<br/>
+                        Value: ${histPoint.diff.toFixed(4)}`;
+                } else if (forecastPoint) {
+                    tooltipContent = `Forecast:<br/>
+                        Date: ${forecastPoint.inputdate.toLocaleDateString()}<br/>
+                        Value: ${forecastPoint.diff.toFixed(4)}<br/>
+                        Upper Bound: ${upperPoint.diff.toFixed(4)}<br/>
+                        Lower Bound: ${lowerPoint.diff.toFixed(4)}`;
+                }
+
+                if (tooltipContent) {
+                    const tooltip = d3.select("#tooltip");
+                    tooltip
+                        .style("opacity", 1)
+                        .style("left", (event.pageX + 10) + "px")
+                        .style("top", (event.pageY - 10) + "px")
+                        .html(tooltipContent);
+                }
+            })
+            .on("mouseout", hideTooltip);
+    }
+
+    private renderNonStationaryChart(
+        g: d3.Selection<SVGGElement, unknown, null, undefined>,
+        xScale: d3.ScaleTime<number, number>,
+        yScale: d3.ScaleLinear<number, number>,
+        lineGen: d3.Line<DiffPoint>,
+        showTooltip: (event: MouseEvent, d: DiffPoint) => void,
+        hideTooltip: () => void,
+        bisectDate: (arr: DiffPoint[], x: Date) => number,
+        innerWidth: number,
+        innerHeight: number
+    ) {
+        // Draw historical data line
+        g.append("path")
+            .datum(this.diffSeries)
+            .attr("fill", "none")
+            .attr("stroke", "#00818F")
+            .attr("stroke-width", 2)
+            .style("stroke-dasharray", "0")
+            .attr("d", lineGen);
+
+        // Add status text
+        g.append("text")
+            .attr("x", innerWidth - 10)
+            .attr("y", -10)
+            .attr("text-anchor", "end")
+            .style("fill", "red")
+            .style("font-size", "12px")
+            .text("ADF failed: Series non-stationary. OU not applied.");
+
+        // Add tooltip interaction overlay
+        g.append("rect")
+            .attr("width", innerWidth)
+            .attr("height", innerHeight)
+            .style("fill", "none")
+            .style("pointer-events", "all")
+            .on("mousemove", (event) => {
+                const mouseX = xScale.invert(d3.pointer(event)[0]);
+                const index = bisectDate(this.diffSeries, mouseX);
+                const d = this.diffSeries[index];
+                if (d) showTooltip(event, d);
+            })
+            .on("mouseout", hideTooltip);
     }
 }
