@@ -854,7 +854,7 @@ export class Visual implements IVisual {
     ) {
         g.selectAll("*").remove();
 
-        // Add chart title
+        // Add chart title with more intuitive wording
         g.append("text")
             .attr("x", 10)
             .attr("y", -35)
@@ -863,7 +863,7 @@ export class Visual implements IVisual {
             .style("font-weight", "bold")
             .style("font-family", "Arial, sans-serif")
             .style("fill", "#00818F")
-            .text("Z-Spread Difference (Forecast via OU Error Changes)");
+            .text("Z-Spread Forecast Based on Error Changes");
 
         // Extract historical data
         const zspreadDiffData = this.diffSeries.map(d => ({
@@ -937,13 +937,13 @@ export class Visual implements IVisual {
             }
         }
 
-        // Display beta coefficient
+        // Display beta coefficient with user-friendly explanation
         g.append("text")
             .attr("x", 10)
             .attr("y", -10)
             .attr("fill", "#333")
             .style("font-size", "12px")
-            .text(`β = ${beta.toFixed(4)} (Δzspread_diff = β × OU(Δerror_diff))`);
+            .text(`Sensitivity: β = ${beta.toFixed(4)} (When Error changes by 1, Z-Spread changes by ${beta.toFixed(4)})`);
 
         // Calculate scale domain with padding
         const values = allData.map(d => d.value);
@@ -984,7 +984,7 @@ export class Visual implements IVisual {
                 .attr("d", zspreadLineGen);
         }
 
-        // Add status text
+        // Add status text with clearer explanation
         g.append("text")
             .attr("x", innerWidth - 10)
             .attr("y", -10)
@@ -992,8 +992,8 @@ export class Visual implements IVisual {
             .attr("fill", this.diffSeriesStationary ? "green" : "red")
             .style("font-size", "12px")
             .text(this.diffSeriesStationary ? 
-                "OU Error changes → Z-Spread forecast" : 
-                "Series non-stationary. No forecast.");
+                "Forecast active: Error changes predict Z-Spread" : 
+                "No forecast: Data not suitable for prediction");
 
         // Add tooltip interaction
         const tooltip = d3.select("#tooltip");
