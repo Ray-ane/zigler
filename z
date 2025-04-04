@@ -378,187 +378,175 @@ export class Visual implements IVisual {
      * Core method to update charts based on the selected bond pair
      */
     private updateChartsInner() {
+        console.log("===== CALCULATING DIFFERENCES AND CHANGES =====");
+        
         if (this.dropdownPairs.options.length === 0) return;
         
         const selectedPair = this.dropdownPairs.value;
         if (!selectedPair) return;
         
         const [selectedBond1, selectedBond2] = selectedPair.split(" vs ");
+        console.log(`Selected pair: ${selectedBond1} vs ${selectedBond2}`);
 
-        const cacheKey = `${selectedBond1}_${selectedBond2}_${this.allData.length}`;
-        if (this.processedData.has(cacheKey)) {
-            this.diffSeries = this.processedData.get(cacheKey)!;
-        } else {
-            // Filter and compute difference series for both error and zspread
-            const errorRows = this.allData.filter(d => 
-                d.context1.trim().toUpperCase() === "ERROR" &&
-                (d.bond1.trim() === selectedBond1.trim() || d.bond1.trim() === selectedBond2.trim())
-            );
+        // Clear previous data
+        this.diffSeries = [];
+        
+        // Filter and compute difference series for both error and zspread
+        const errorRows = this.allData.filter(d => 
+            d.context1.trim().toUpperCase() === "ERROR" &&
+            (d.bond1.trim() === selectedBond1.trim() || d.bond1.trim() === selectedBond2.trim())
+        );
 
-            const mapBond1 = new Map<string, {error: number, zspread: number}>();
-            const mapBond2 = new Map<string, {error: number, zspread: number}>();
-            
-            errorRows.forEach(d => {
-                const key = d.inputdate.toDateString();
-                const value = { 
-                    error: d.error, 
-                    zspread: d.zspread
-                };
-                
-                if (d.bond1.trim() === selectedBond1.trim()) {
-                    mapBond1.set(key, value);
-                } else if (d.bond1.trim() === selectedBond2.trim()) {
-                    mapBond2.set(key, value);
-                }
-            });
+        console.log(`Found ${errorRows.length} error rows for the selected bonds`);
 
-            // Collect dates where both bonds have data
-            const commonDates: string[] = [];
-            mapBond1.forEach((_, key) => {
-                if (mapBond2.has(key)) {
-                    commonDates.push(key);
+        const mapBond1 = new Map<string, {error: number, zspread: number}>();
+        const mapBond2 = new Map<string, {error: number, zspread: number}>();
+        
+        errorRows.forEach(d => {
+            const key = d.inputdate.toDateString();
+            const value = { 
+                error: d.error, 
+                zspread: d.zspread
+            };
+            
+            if (d.bond1.trim() === selectedBond1.trim()) {
+                mapBond1.set(key, value);
+            } else if (d.bond1.trim() === selectedBond2.trim()) {
+                mapBond2.set(key, value);
+            }
+        });
+
+        console.log(`Bond1 data points: ${mapBond1.size}, Bond2 data points: ${mapBond2.size}`);
+
+        // Collect dates where both bonds have data
+        const commonDates: string[] = [];
+        mapBond1.forEach((_, key) => {
+            if (mapBond2.has(key)) {
+                commonDates.push(key);
+            }
+        });
+        
+        // Sort dates chronologically
+        commonDates.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+        console.log(`Found ${commonDates.length} days with data for both bonds`);
+        
+        // Create diffSeries with differences and daily changes
+        console.log("COMPUTING ERROR AND ZSPREAD DIFFERENCES AND DAILY CHANGES:");
+        
+        for (let i = 0; i < commonDates.length; i++) {
+            const key = commonDates[i];
+            const val1 = mapBond1.get(key)!;
+            const val2 = mapBond2.get(key)!;
+            
+            // Calculate differences for current day
+            const errorDiff = val2.error - val1.error;
+            const zspreadDiff = val2.zspread - val1.zspread;
+            
+            console.log(`${key}: errorDiff = ${errorDiff}, zspreadDiff = ${zspreadDiff}`);
+            
+            // Initialize daily changes (will be set in next loop iteration if not the first point)
+            let errorChange = 0;
+            let zspreadChange = 0;
+            
+            // For points beyond the first one, calculate daily changes
+            if (i > 0) {
+                const prevKey = commonDates[i-1];
+                const prevVal1 = mapBond1.get(prevKey)!;
+                const prevVal2 = mapBond2.get(prevKey)!;
+                const prevErrorDiff = prevVal2.error - prevVal1.error;
+                const prevZspreadDiff = prevVal2.zspread - prevVal1.zspread;
+                
+                errorChange = errorDiff - prevErrorDiff;
+                zspreadChange = zspreadDiff - prevZspreadDiff;
+                
+                console.log(`  Daily change: errorChange = ${errorChange}, zspreadChange = ${zspreadChange}`);
+                
+                // Update previous point's change values since we now know them
+                if (i === 1) {
+                    // For the first point, set changes to 0
+                    this.diffSeries[0].errorChange = 0;
+                    this.diffSeries[0].zspreadChange = 0;
                 }
-            });
-            
-            // Sort dates chronologically
-            commonDates.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-            
-            // Create diffSeries with differences and daily changes
-            this.diffSeries = [];
-            
-            for (let i = 0; i < commonDates.length; i++) {
-                const key = commonDates[i];
-                const val1 = mapBond1.get(key)!;
-                const val2 = mapBond2.get(key)!;
-                
-                // Calculate differences for current day
-                const errorDiff = val2.error - val1.error;
-                const zspreadDiff = val2.zspread - val1.zspread;
-                
-                // Initialize daily changes (will be set in next loop iteration if not the first point)
-                let errorChange = 0;
-                let zspreadChange = 0;
-                
-                // For points beyond the first one, calculate daily changes
-                if (i > 0) {
-                    const prevKey = commonDates[i-1];
-                    const prevVal1 = mapBond1.get(prevKey)!;
-                    const prevVal2 = mapBond2.get(prevKey)!;
-                    const prevErrorDiff = prevVal2.error - prevVal1.error;
-                    const prevZspreadDiff = prevVal2.zspread - prevVal1.zspread;
-                    
-                    errorChange = errorDiff - prevErrorDiff;
-                    zspreadChange = zspreadDiff - prevZspreadDiff;
-                    
-                    // Update previous point's change values since we now know them
-                    if (i === 1) {
-                        // For the first point, set changes to 0
-                        this.diffSeries[0].errorChange = 0;
-                        this.diffSeries[0].zspreadChange = 0;
-                    }
-                }
-                
-                // Add the current point
-                this.diffSeries.push({
-                    inputdate: new Date(key),
-                    diff: errorDiff,
-                    errorChange: errorChange,
-                    zspreadRaw1: val1.zspread,
-                    zspreadRaw2: val2.zspread,
-                    zspreadDiff: zspreadDiff,
-                    zspreadChange: zspreadChange
-                });
             }
             
-            // Cache the processed data for future use
-            this.processedData.set(cacheKey, this.diffSeries);
+            // Add the current point
+            this.diffSeries.push({
+                inputdate: new Date(key),
+                diff: errorDiff,
+                errorChange: errorChange,
+                zspreadRaw1: val1.zspread,
+                zspreadRaw2: val2.zspread,
+                zspreadDiff: zspreadDiff,
+                zspreadChange: zspreadChange
+            });
         }
-
+        
+        console.log(`Built diffSeries with ${this.diffSeries.length} points`);
+        
         if (this.diffSeries.length < 2) {
+            console.log("Not enough points to calculate beta or render charts");
             this.renderChart(false);
             return;
         }
 
-        // Calculate beta coefficient for the relationship between 
-        // daily changes in error differences and zspread differences
-        // 
-        // The relationship is modeled as:
-        // zspread_diff_change = β × error_diff_change
-        // 
-        // This is a pure proportional relationship (forced through origin).
-        // The beta coefficient will be used to forecast zspread_diff based on
-        // forecasted changes in error_diff.
+        // Calculate beta coefficient
         const { beta } = this.calculateBeta();
+        this.beta = beta;
 
         // Apply ADF test to check for stationarity of error_diff
         const diffs = this.diffSeries.map(d => d.diff);
         this.diffSeriesStationary = this.performADFTest(diffs);
+        
+        console.log(`Series stationary: ${this.diffSeriesStationary}, Beta: ${beta}`);
+        console.log("===========================================");
+        
         this.renderChart(this.diffSeriesStationary);
     }
 
     /**
      * Calculates the beta coefficient for the relationship between 
      * daily changes in error differences and zspread differences
-     * 
-     * The relationship is modeled as:
-     * zspread_diff_change = β × error_diff_change
-     * 
-     * This is a pure proportional relationship (forced through origin).
-     * The beta coefficient will be used to forecast zspread_diff based on
-     * forecasted changes in error_diff.
      */
     private calculateBeta(): { beta: number } {
-        // Need at least 2 points to have 1 change
+        console.log("===== SIMPLE BETA CALCULATION =====");
+        
+        // Check if we have enough data points
         if (this.diffSeries.length < 2) {
-            console.log('Not enough points for beta calculation');
+            console.log("Not enough data points for beta calculation");
             return { beta: 0 };
         }
-
-        // Skip first point which doesn't have change values
-        const changesData = this.diffSeries.slice(1);
         
-        console.log('Raw changes data length:', changesData.length);
-        console.log('First few data points:', changesData.slice(0, 3).map(d => ({ 
-            date: d.inputdate.toLocaleDateString(), 
-            errorChange: d.errorChange, 
-            zspreadChange: d.zspreadChange 
-        })));
-
-        // Direct calculation without filtering - use all available data
-        let sumErrorChangeSq = 0;
-        let sumErrorZspreadChangeProd = 0;
+        // Skip the first point which doesn't have change values
+        const points = this.diffSeries.slice(1);
         
-        // Calculate sums directly without using means
-        for (let i = 0; i < changesData.length; i++) {
-            const errorChange = changesData[i].errorChange;
-            const zspreadChange = changesData[i].zspreadChange;
-            
-            sumErrorChangeSq += errorChange * errorChange;
-            sumErrorZspreadChangeProd += errorChange * zspreadChange;
-            
-            console.log(`Data point ${i}:`, {
-                errorChange,
-                zspreadChange,
-                errorChangeSq: errorChange * errorChange,
-                product: errorChange * zspreadChange,
-                runningSumErrorChangeSq: sumErrorChangeSq,
-                runningSumProduct: sumErrorZspreadChangeProd
-            });
-        }
-        
-        console.log('Sum calculations:', {
-            sumErrorChangeSq,
-            sumErrorZspreadChangeProd
+        // Log all the change data points clearly
+        console.log("RAW DATA POINTS (error_diff_change and zspread_diff_change):");
+        points.forEach((point, i) => {
+            console.log(`Point ${i+1}: error_diff_change = ${point.errorChange}, zspread_diff_change = ${point.zspreadChange}, date = ${point.inputdate.toLocaleDateString()}`);
         });
         
-        // Calculate beta directly as sum(xy)/sum(x²)
-        // This is equivalent to the regression through origin
+        // Calculate sum of errorChange * zspreadChange and sum of errorChange^2
+        let sumProduct = 0;
+        let sumErrorChangeSq = 0;
+        
+        // Simplest form of beta calculation: sum(xy)/sum(x^2)
+        points.forEach(point => {
+            sumProduct += point.errorChange * point.zspreadChange;
+            sumErrorChangeSq += point.errorChange * point.errorChange;
+        });
+        
+        console.log("SUMS:");
+        console.log(`Sum of products: ${sumProduct}`);
+        console.log(`Sum of error change squared: ${sumErrorChangeSq}`);
+        
+        // Calculate beta
         let beta = 0;
         if (Math.abs(sumErrorChangeSq) > 1e-10) {
-            beta = sumErrorZspreadChangeProd / sumErrorChangeSq;
+            beta = sumProduct / sumErrorChangeSq;
         }
         
-        console.log('Final beta calculation:', beta);
+        console.log(`BETA = ${beta}`);
+        console.log("=====================================");
         
         return { beta };
     }
