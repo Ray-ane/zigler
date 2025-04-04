@@ -992,7 +992,7 @@ export class Visual implements IVisual {
             .attr("fill", this.diffSeriesStationary ? "green" : "red")
             .style("font-size", "12px")
             .text(this.diffSeriesStationary ? 
-                "Forecast active: Error changes predict Z-Spread" : 
+                `Forecast active: When Error changes by 1, Z-Spread changes by ${beta.toFixed(4)}` : 
                 "No forecast: Data not suitable for prediction");
 
         // Add tooltip interaction
