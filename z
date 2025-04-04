@@ -501,14 +501,37 @@ export class Visual implements IVisual {
      */
     private calculateBeta(): { beta: number } {
         // Need at least 3 points to have 2 changes
-        if (this.diffSeries.length < 3) return { beta: 0 };
+        if (this.diffSeries.length < 3) return { beta: 0.5 }; // Default to 0.5 if not enough data
 
-        // Skip first point which doesn't have change values
+        // Skip first point which doesn't have meaningful change values
         const changesData = this.diffSeries.slice(1);
+        
+        // Log the data for debugging
+        console.log('Changes data for beta calculation:', 
+            changesData.map(d => ({ 
+                date: d.inputdate.toLocaleDateString(), 
+                errorChange: d.errorChange, 
+                zspreadChange: d.zspreadChange 
+            }))
+        );
+
+        // Check if we have valid changes to work with
+        const validChanges = changesData.filter(d => 
+            !isNaN(d.errorChange) && isFinite(d.errorChange) && 
+            !isNaN(d.zspreadChange) && isFinite(d.zspreadChange) &&
+            Math.abs(d.errorChange) > 1e-10 // Avoid near-zero values
+        );
+        
+        if (validChanges.length < 2) {
+            console.log('Not enough valid changes for beta calculation, using default');
+            return { beta: 0.5 }; // Default to 0.5 if not enough valid data
+        }
 
         // Calculate means for error_diff change and zspread_diff change
-        const errorChangeMean = d3.mean(changesData, d => d.errorChange) || 0;
-        const zspreadChangeMean = d3.mean(changesData, d => d.zspreadChange) || 0;
+        const errorChangeMean = d3.mean(validChanges, d => d.errorChange) || 0;
+        const zspreadChangeMean = d3.mean(validChanges, d => d.zspreadChange) || 0;
+        
+        console.log('Means:', { errorChangeMean, zspreadChangeMean });
 
         // Calculate linear regression coefficient β (slope only)
         // Using formula: β = Cov(X,Y)/Var(X)
@@ -516,16 +539,26 @@ export class Visual implements IVisual {
         let numerator = 0;   // Covariance between error_diff_change and zspread_diff_change
         let denominator = 0; // Variance of error_diff_change
         
-        changesData.forEach(d => {
+        validChanges.forEach(d => {
             const errorChangeDev = d.errorChange - errorChangeMean;         // Deviation from mean for error diff change
             const zspreadChangeDev = d.zspreadChange - zspreadChangeMean;   // Deviation from mean for zspread diff change
             numerator += errorChangeDev * zspreadChangeDev;                 // Sum of products for covariance
             denominator += errorChangeDev * errorChangeDev;                 // Sum of squares for variance
         });
+        
+        console.log('Beta calculation:', { numerator, denominator });
 
         // Calculate beta (slope coefficient)
-        // If denominator is zero (no variance in X), return zero to avoid division by zero
-        const beta = denominator !== 0 ? numerator / denominator : 0;
+        // If denominator is too close to zero, use a default value
+        let beta = 0.5; // Default value
+        if (Math.abs(denominator) > 1e-6) {
+            beta = numerator / denominator;
+            
+            // Ensure beta is reasonable - constrain to [-10, 10] range
+            beta = Math.max(-10, Math.min(10, beta));
+        }
+        
+        console.log('Calculated beta:', beta);
         
         // Return only beta, no alpha
         return { beta };
@@ -958,6 +991,8 @@ export class Visual implements IVisual {
         // Get beta coefficient for the relationship between changes
         const { beta } = this.calculateBeta();
         this.beta = beta; // Store beta for display
+        
+        console.log('Using beta:', beta);
 
         // Prepare arrays for forecast data points
         let forecastZspreadDiffData: {inputdate: Date, value: number}[] = [];
@@ -969,10 +1004,18 @@ export class Visual implements IVisual {
                 this.diffSeries.map(d => d.inputdate)
             );
             
+            console.log('OU results:', {
+                lambda: ouResults.lambda,
+                mu: ouResults.mu,
+                forecastPoints: ouResults.forecastPoints.map(p => ({ date: p.inputdate, diff: p.diff }))
+            });
+            
             // Extract the last historical error difference value
             const lastErrorDiff = this.diffSeries[this.diffSeries.length - 1].diff;
             // Extract the last historical z-spread difference value
             const lastZspreadDiff = this.diffSeries[this.diffSeries.length - 1].zspreadDiff;
+            
+            console.log('Last values:', { lastErrorDiff, lastZspreadDiff });
             
             // Get the OU process parameters from the left chart
             const mu = ouResults.mu;          // Long-term mean for error_diff
@@ -982,6 +1025,8 @@ export class Visual implements IVisual {
             const lastTime = this.diffSeries[this.diffSeries.length - 1].inputdate.getTime();
             const delta = (ouResults.forecastPoints[1].inputdate.getTime() - lastTime) / (1000 * 60 * 60 * 24);
             
+            console.log('Time delta (days):', delta);
+            
             // Start with the last historical zspread_diff value
             let currentZspreadDiff = lastZspreadDiff;
             let currentErrorDiff = lastErrorDiff;
@@ -990,14 +1035,25 @@ export class Visual implements IVisual {
             forecastZspreadDiffData = ouResults.forecastPoints.map((forecastPoint, i) => {
                 if (i === 0) {
                     // For the first forecast point, we need to use the OU prediction
-                    currentErrorDiff = forecastPoint.diff;
-                    
                     // Apply beta to the expected change from OU process
                     // The expected change in error_diff according to OU is: λ(μ - X)dt
                     const expectedErrorChange = lambda * (mu - lastErrorDiff) * delta;
+                    currentErrorDiff = forecastPoint.diff;
+                    
+                    console.log(`Forecast point ${i}:`, {
+                        expectedErrorChange,
+                        lastErrorDiff,
+                        forecast: forecastPoint.diff
+                    });
                     
                     // Apply beta to translate error change to zspread change
-                    currentZspreadDiff += beta * expectedErrorChange;
+                    const zspreadChange = beta * expectedErrorChange;
+                    currentZspreadDiff += zspreadChange;
+                    
+                    console.log(`  Resulting zspread change:`, {
+                        zspreadChange,
+                        newZspreadDiff: currentZspreadDiff
+                    });
                 } else {
                     // For subsequent points, use the OU error_diff forecast from previous point
                     const prevErrorDiff = currentErrorDiff;
@@ -1006,8 +1062,20 @@ export class Visual implements IVisual {
                     // Expected change from OU process at this step
                     const expectedErrorChange = lambda * (mu - prevErrorDiff) * delta;
                     
+                    console.log(`Forecast point ${i}:`, {
+                        expectedErrorChange,
+                        prevErrorDiff,
+                        forecast: forecastPoint.diff
+                    });
+                    
                     // Apply beta to translate error change to zspread change
-                    currentZspreadDiff += beta * expectedErrorChange;
+                    const zspreadChange = beta * expectedErrorChange;
+                    currentZspreadDiff += zspreadChange;
+                    
+                    console.log(`  Resulting zspread change:`, {
+                        zspreadChange,
+                        newZspreadDiff: currentZspreadDiff
+                    });
                 }
                 
                 return {
@@ -1029,14 +1097,25 @@ export class Visual implements IVisual {
         const dataForScales = this.diffSeriesStationary ? 
             [...zspreadDiffData, ...forecastZspreadDiffData] : zspreadDiffData;
 
+        // Log domain values for debugging
+        console.log('Chart y-domain values:', dataForScales.map(d => d.value));
+        
         // Create a proper y-scale based on actual data values
+        const yMin = d3.min(dataForScales, d => d.value) || 0;
+        const yMax = d3.max(dataForScales, d => d.value) || 1;
+        
+        // Ensure the domain has some span
+        const domainPadding = Math.max(0.1, Math.abs(yMax - yMin) * 0.1);
+        
         const zspreadYScale = d3.scaleLinear()
             .domain([
-                d3.min(dataForScales, d => d.value) || 0,
-                d3.max(dataForScales, d => d.value) || 1
-            ].map(v => v * 1.1)) // Add 10% padding to prevent clipping
+                yMin - domainPadding,
+                yMax + domainPadding
+            ])
             .range([innerHeight, 0])
             .nice();
+        
+        console.log('Y-scale domain:', zspreadYScale.domain());
 
         // Create line generator with the right scales
         const zspreadLineGen = d3.line<{inputdate: Date, value: number}>()
@@ -1056,6 +1135,9 @@ export class Visual implements IVisual {
         // Draw forecast line if we have stationary data
         if (this.diffSeriesStationary && forecastZspreadDiffData.length > 0) {
             const combinedData = [zspreadDiffData[zspreadDiffData.length - 1], ...forecastZspreadDiffData];
+            
+            console.log('Combined forecast data:', combinedData);
+            
             g.append("path")
                 .datum(combinedData)
                 .attr("fill", "none")
