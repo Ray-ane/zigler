@@ -944,7 +944,7 @@ export class Visual implements IVisual {
             .attr("y", -10)
             .attr("fill", beta > 0 ? "#333" : "red")
             .style("font-size", "12px")
-            .text(`When Error changes by 1, Z-Spread changes by ${beta.toFixed(2)}`);
+            .text(`β = ${beta.toFixed(2)}`);
 
         // Calculate scale domain with padding
         const values = allData.map(d => d.value);
@@ -993,7 +993,7 @@ export class Visual implements IVisual {
             .attr("fill", canForecast ? "green" : "red")
             .style("font-size", "12px")
             .text(canForecast ? 
-                `Forecast active: ${beta.toFixed(2)}` : 
+                `Forecast active: β = ${beta.toFixed(2)} (When Error changes by 1, Z-Spread changes by ${beta.toFixed(2)})` : 
                 beta <= 0 ? "No forecast: β is negative" : "No forecast: Data not suitable for prediction");
 
         // Add tooltip interaction
