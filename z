@@ -32,8 +32,7 @@ interface DataRow {
     bond1: string;
     bond2: string;
     error: number;
-    zspread_error: number;
-    zspread: number; // New column for raw zspread values
+    zspread: number; // Raw zspread values
 }
 
 /**
@@ -42,12 +41,11 @@ interface DataRow {
 interface DiffPoint {
     inputdate: Date;
     diff: number;                // error difference
-    zspread1: number;            // zspread_error for bond1
-    zspread2: number;            // zspread_error for bond2
-    zspreadDiff: number;         // zspread_error difference
+    errorChange: number;         // daily change in error difference
     zspreadRaw1: number;         // raw zspread for bond1
     zspreadRaw2: number;         // raw zspread for bond2
-    zspreadRawDiff: number;      // raw zspread difference
+    zspreadDiff: number;         // raw zspread difference
+    zspreadChange: number;       // daily change in zspread difference
 }
 
 /**
@@ -295,8 +293,7 @@ export class Visual implements IVisual {
             bond1: row[4]?.toString() || "",
             bond2: row[5]?.toString() || "",
             error: +row[6],
-            zspread_error: +row[7] || 0,
-            zspread: +row[8] || 0  // New field for raw zspread values
+            zspread: +row[8] || 0  // Keep just the raw zspread values (index 8)
         };
     }
 
@@ -379,12 +376,6 @@ export class Visual implements IVisual {
 
     /**
      * Core method to update charts based on the selected bond pair
-     * 
-     * This method:
-     * 1. Calculates differences between bond values (error, zspread_error, zspread)
-     * 2. Tests for stationarity using the ADF test
-     * 3. Computes the regression coefficient between zspread and zspread_error
-     * 4. Generates forecasts based on the Ornstein-Uhlenbeck process
      */
     private updateChartsInner() {
         if (this.dropdownPairs.options.length === 0) return;
@@ -398,20 +389,19 @@ export class Visual implements IVisual {
         if (this.processedData.has(cacheKey)) {
             this.diffSeries = this.processedData.get(cacheKey)!;
         } else {
-            // Filter and compute difference series for both error and zspread metrics
+            // Filter and compute difference series for both error and zspread
             const errorRows = this.allData.filter(d => 
                 d.context1.trim().toUpperCase() === "ERROR" &&
                 (d.bond1.trim() === selectedBond1.trim() || d.bond1.trim() === selectedBond2.trim())
             );
 
-            const mapBond1 = new Map<string, {error: number, zspread_error: number, zspread: number}>();
-            const mapBond2 = new Map<string, {error: number, zspread_error: number, zspread: number}>();
+            const mapBond1 = new Map<string, {error: number, zspread: number}>();
+            const mapBond2 = new Map<string, {error: number, zspread: number}>();
             
             errorRows.forEach(d => {
                 const key = d.inputdate.toDateString();
                 const value = { 
                     error: d.error, 
-                    zspread_error: d.zspread_error,
                     zspread: d.zspread
                 };
                 
@@ -422,25 +412,65 @@ export class Visual implements IVisual {
                 }
             });
 
-            this.diffSeries = [];
-            mapBond1.forEach((val1, key) => {
+            // Collect dates where both bonds have data
+            const commonDates: string[] = [];
+            mapBond1.forEach((_, key) => {
                 if (mapBond2.has(key)) {
-                    const val2 = mapBond2.get(key)!;
-                    this.diffSeries.push({
-                        inputdate: new Date(key),
-                        diff: val2.error - val1.error,
-                        zspread1: val1.zspread_error,
-                        zspread2: val2.zspread_error,
-                        zspreadDiff: val2.zspread_error - val1.zspread_error,
-                        zspreadRaw1: val1.zspread,
-                        zspreadRaw2: val2.zspread,
-                        zspreadRawDiff: val2.zspread - val1.zspread
-                    });
+                    commonDates.push(key);
                 }
             });
             
-            this.diffSeries.sort((a, b) => a.inputdate.getTime() - b.inputdate.getTime());
+            // Sort dates chronologically
+            commonDates.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
             
+            // Create diffSeries with differences and daily changes
+            this.diffSeries = [];
+            
+            for (let i = 0; i < commonDates.length; i++) {
+                const key = commonDates[i];
+                const val1 = mapBond1.get(key)!;
+                const val2 = mapBond2.get(key)!;
+                
+                // Calculate differences for current day
+                const errorDiff = val2.error - val1.error;
+                const zspreadDiff = val2.zspread - val1.zspread;
+                
+                // Initialize daily changes (will be set in next loop iteration if not the first point)
+                let errorChange = 0;
+                let zspreadChange = 0;
+                
+                // For points beyond the first one, calculate daily changes
+                if (i > 0) {
+                    const prevKey = commonDates[i-1];
+                    const prevVal1 = mapBond1.get(prevKey)!;
+                    const prevVal2 = mapBond2.get(prevKey)!;
+                    const prevErrorDiff = prevVal2.error - prevVal1.error;
+                    const prevZspreadDiff = prevVal2.zspread - prevVal1.zspread;
+                    
+                    errorChange = errorDiff - prevErrorDiff;
+                    zspreadChange = zspreadDiff - prevZspreadDiff;
+                    
+                    // Update previous point's change values since we now know them
+                    if (i === 1) {
+                        // For the first point, set changes to 0
+                        this.diffSeries[0].errorChange = 0;
+                        this.diffSeries[0].zspreadChange = 0;
+                    }
+                }
+                
+                // Add the current point
+                this.diffSeries.push({
+                    inputdate: new Date(key),
+                    diff: errorDiff,
+                    errorChange: errorChange,
+                    zspreadRaw1: val1.zspread,
+                    zspreadRaw2: val2.zspread,
+                    zspreadDiff: zspreadDiff,
+                    zspreadChange: zspreadChange
+                });
+            }
+            
+            // Cache the processed data for future use
             this.processedData.set(cacheKey, this.diffSeries);
         }
 
@@ -449,10 +479,10 @@ export class Visual implements IVisual {
             return;
         }
 
-        // Calculate beta coefficient for the regression between zspread and zspread_error
+        // Calculate beta coefficient for the regression between changes in error_diff and zspread_diff
         const { beta } = this.calculateBeta();
 
-        // Apply ADF test to check for stationarity
+        // Apply ADF test to check for stationarity of error_diff
         const diffs = this.diffSeries.map(d => d.diff);
         this.diffSeriesStationary = this.performADFTest(diffs);
         this.renderChart(this.diffSeriesStationary);
@@ -460,33 +490,37 @@ export class Visual implements IVisual {
 
     /**
      * Calculates the beta coefficient for the relationship between 
-     * raw zspread differences and zspread_error differences
+     * daily changes in error differences and zspread differences
      * 
      * The relationship is modeled as:
-     * zspread_error_diff = β × zspread_diff
+     * zspread_diff_change = β × error_diff_change
      * 
      * This is a pure proportional relationship (forced through origin).
-     * The beta coefficient represents how changes in raw zspread translate to 
-     * changes in zspread_error.
+     * The beta coefficient will be used to forecast zspread_diff based on
+     * forecasted changes in error_diff.
      */
     private calculateBeta(): { beta: number } {
-        if (this.diffSeries.length < 2) return { beta: 0 };
+        // Need at least 3 points to have 2 changes
+        if (this.diffSeries.length < 3) return { beta: 0 };
 
-        // Calculate means for zspread raw difference and z-spread error difference
-        const zspreadRawMean = d3.mean(this.diffSeries, d => d.zspreadRawDiff) || 0;
-        const zspreadErrorMean = d3.mean(this.diffSeries, d => d.zspreadDiff) || 0;
+        // Skip first point which doesn't have change values
+        const changesData = this.diffSeries.slice(1);
+
+        // Calculate means for error_diff change and zspread_diff change
+        const errorChangeMean = d3.mean(changesData, d => d.errorChange) || 0;
+        const zspreadChangeMean = d3.mean(changesData, d => d.zspreadChange) || 0;
 
         // Calculate linear regression coefficient β (slope only)
         // Using formula: β = Cov(X,Y)/Var(X)
-        // Where X is zspreadRawDiff and Y is zspreadDiff
-        let numerator = 0;   // Covariance between zspread_diff and zspread_error_diff
-        let denominator = 0; // Variance of zspread_diff
+        // Where X is errorChange and Y is zspreadChange
+        let numerator = 0;   // Covariance between error_diff_change and zspread_diff_change
+        let denominator = 0; // Variance of error_diff_change
         
-        this.diffSeries.forEach(d => {
-            const zspreadRawDev = d.zspreadRawDiff - zspreadRawMean;         // Deviation from mean for zspread diff
-            const zspreadErrorDev = d.zspreadDiff - zspreadErrorMean;        // Deviation from mean for zspread error diff
-            numerator += zspreadRawDev * zspreadErrorDev;                    // Sum of products for covariance
-            denominator += zspreadRawDev * zspreadRawDev;                    // Sum of squares for variance
+        changesData.forEach(d => {
+            const errorChangeDev = d.errorChange - errorChangeMean;         // Deviation from mean for error diff change
+            const zspreadChangeDev = d.zspreadChange - zspreadChangeMean;   // Deviation from mean for zspread diff change
+            numerator += errorChangeDev * zspreadChangeDev;                 // Sum of products for covariance
+            denominator += errorChangeDev * errorChangeDev;                 // Sum of squares for variance
         });
 
         // Calculate beta (slope coefficient)
@@ -638,36 +672,33 @@ export class Visual implements IVisual {
             forecastPoints.push({ 
                 inputdate: nextDate, 
                 diff: meanForecast, 
-                zspread1: 0, 
-                zspread2: 0, 
-                zspreadDiff: 0,
+                errorChange: 0,
                 zspreadRaw1: 0,
                 zspreadRaw2: 0,
-                zspreadRawDiff: 0 
+                zspreadDiff: 0,
+                zspreadChange: 0
             });
             
             // Upper bound: mean + 1.96*std (95% confidence interval)
             upperBoundPoints.push({ 
                 inputdate: nextDate, 
                 diff: meanForecast + 1.96 * stdDev, 
-                zspread1: 0, 
-                zspread2: 0, 
-                zspreadDiff: 0,
+                errorChange: 0,
                 zspreadRaw1: 0,
                 zspreadRaw2: 0,
-                zspreadRawDiff: 0 
+                zspreadDiff: 0,
+                zspreadChange: 0
             });
             
             // Lower bound: mean - 1.96*std (95% confidence interval)
             lowerBoundPoints.push({ 
                 inputdate: nextDate, 
                 diff: meanForecast - 1.96 * stdDev, 
-                zspread1: 0, 
-                zspread2: 0, 
-                zspreadDiff: 0,
+                errorChange: 0,
                 zspreadRaw1: 0,
                 zspreadRaw2: 0,
-                zspreadRawDiff: 0
+                zspreadDiff: 0,
+                zspreadChange: 0
             });
         }
 
@@ -884,8 +915,8 @@ export class Visual implements IVisual {
     }
 
     /**
-     * Renders the zspread chart showing historical zspread_error differences
-     * and forecasted values based on the β coefficient
+     * Renders the zspread chart showing historical zspread differences
+     * and forecasted values based on the β coefficient applied to error changes
      */
     private renderZspreadChart(
         g: d3.Selection<SVGGElement, unknown, null, undefined>,
@@ -896,7 +927,7 @@ export class Visual implements IVisual {
         // Clear any existing content
         g.selectAll("*").remove();
 
-        // Add Z-Spread Error chart title
+        // Add Z-Spread chart title
         g.append("text")
             .attr("x", 10)
             .attr("y", -35)
@@ -905,20 +936,15 @@ export class Visual implements IVisual {
             .style("font-weight", "bold")
             .style("font-family", "Arial, sans-serif")
             .style("fill", "#00818F")
-            .text("Z-Spread Error Difference (β × Z-Spread only)");
+            .text("Z-Spread Difference (Forecast via OU Error Changes)");
 
-        // Extract data for plotting - both historical series
-        const zspreadErrorDiffData = this.diffSeries.map(d => ({
+        // Extract data for plotting
+        const zspreadDiffData = this.diffSeries.map(d => ({
             inputdate: d.inputdate,
-            value: d.zspreadDiff      // Historical zspread_error differences
-        }));
-        
-        const zspreadRawDiffData = this.diffSeries.map(d => ({
-            inputdate: d.inputdate,
-            value: d.zspreadRawDiff   // Historical raw zspread differences
+            value: d.zspreadDiff      // Historical zspread differences
         }));
 
-        if (zspreadErrorDiffData.length === 0) {
+        if (zspreadDiffData.length === 0) {
             g.append("text")
                 .attr("x", innerWidth / 2)
                 .attr("y", innerHeight / 2)
@@ -929,13 +955,12 @@ export class Visual implements IVisual {
             return;
         }
 
-        // Get beta coefficient for the proportional relationship - no alpha
+        // Get beta coefficient for the relationship between changes
         const { beta } = this.calculateBeta();
         this.beta = beta; // Store beta for display
 
         // Prepare arrays for forecast data points
-        let forecastZspreadRawData: {inputdate: Date, value: number}[] = [];
-        let forecastZspreadErrorData: {inputdate: Date, value: number}[] = [];
+        let forecastZspreadDiffData: {inputdate: Date, value: number}[] = [];
         
         if (this.diffSeriesStationary) {
             // Get OU parameters and forecasts for the error series
@@ -944,29 +969,50 @@ export class Visual implements IVisual {
                 this.diffSeries.map(d => d.inputdate)
             );
             
-            // Step 1: Forecast raw zspread differences using the OU process
-            forecastZspreadRawData = ouResults.forecastPoints.map((forecastPoint, i) => {
-                const lastZspreadRawDiff = this.diffSeries[this.diffSeries.length - 1].zspreadRawDiff;
-                const zspreadRawMean = d3.mean(this.diffSeries, d => d.zspreadRawDiff) || 0;
-                
-                const alphaPow = Math.pow(Math.exp(-ouResults.lambda * this.delta / (1000 * 60 * 60 * 24)), i);
-                const zspreadRawForecast = zspreadRawMean + (lastZspreadRawDiff - zspreadRawMean) * alphaPow;
+            // Extract the last historical error difference value
+            const lastErrorDiff = this.diffSeries[this.diffSeries.length - 1].diff;
+            // Extract the last historical z-spread difference value
+            const lastZspreadDiff = this.diffSeries[this.diffSeries.length - 1].zspreadDiff;
+            
+            // Get the OU process parameters from the left chart
+            const mu = ouResults.mu;          // Long-term mean for error_diff
+            const lambda = ouResults.lambda;  // Mean-reversion rate
+            
+            // Calculate time step in days
+            const lastTime = this.diffSeries[this.diffSeries.length - 1].inputdate.getTime();
+            const delta = (ouResults.forecastPoints[1].inputdate.getTime() - lastTime) / (1000 * 60 * 60 * 24);
+            
+            // Start with the last historical zspread_diff value
+            let currentZspreadDiff = lastZspreadDiff;
+            let currentErrorDiff = lastErrorDiff;
+            
+            // Generate zspread_diff forecasts using the OU error change model
+            forecastZspreadDiffData = ouResults.forecastPoints.map((forecastPoint, i) => {
+                if (i === 0) {
+                    // For the first forecast point, we need to use the OU prediction
+                    currentErrorDiff = forecastPoint.diff;
+                    
+                    // Apply beta to the expected change from OU process
+                    // The expected change in error_diff according to OU is: λ(μ - X)dt
+                    const expectedErrorChange = lambda * (mu - lastErrorDiff) * delta;
+                    
+                    // Apply beta to translate error change to zspread change
+                    currentZspreadDiff += beta * expectedErrorChange;
+                } else {
+                    // For subsequent points, use the OU error_diff forecast from previous point
+                    const prevErrorDiff = currentErrorDiff;
+                    currentErrorDiff = forecastPoint.diff;
+                    
+                    // Expected change from OU process at this step
+                    const expectedErrorChange = lambda * (mu - prevErrorDiff) * delta;
+                    
+                    // Apply beta to translate error change to zspread change
+                    currentZspreadDiff += beta * expectedErrorChange;
+                }
                 
                 return {
                     inputdate: forecastPoint.inputdate,
-                    value: zspreadRawForecast
-                };
-            });
-            
-            // Step 2: Calculate zspread_error forecasts using pure beta coefficient
-            // zspread_error_diff = β × zspread_diff
-            forecastZspreadErrorData = forecastZspreadRawData.map(rawForecast => {
-                // Simple proportional relationship using only beta
-                const zspreadErrorForecast = beta * rawForecast.value;
-                
-                return {
-                    inputdate: rawForecast.inputdate,
-                    value: zspreadErrorForecast
+                    value: currentZspreadDiff
                 };
             });
         }
@@ -977,11 +1023,11 @@ export class Visual implements IVisual {
             .attr("y", -10)
             .attr("fill", "#333")
             .style("font-size", "12px")
-            .text(`β = ${beta.toFixed(4)} (zspread_error = β × zspread)`);
+            .text(`β = ${beta.toFixed(4)} (Δzspread_diff = β × OU(Δerror_diff))`);
 
         // Create scales for the chart
         const dataForScales = this.diffSeriesStationary ? 
-            [...zspreadErrorDiffData, ...forecastZspreadErrorData] : zspreadErrorDiffData;
+            [...zspreadDiffData, ...forecastZspreadDiffData] : zspreadDiffData;
 
         // Create a proper y-scale based on actual data values
         const zspreadYScale = d3.scaleLinear()
@@ -998,9 +1044,9 @@ export class Visual implements IVisual {
             .y(d => zspreadYScale(d.value))
             .curve(d3.curveMonotoneX);
 
-        // Draw historical zspread_error line
+        // Draw historical zspread line
         g.append("path")
-            .datum(zspreadErrorDiffData)
+            .datum(zspreadDiffData)
             .attr("fill", "none")
             .attr("stroke", "#00818F")
             .attr("stroke-width", 2)
@@ -1008,8 +1054,8 @@ export class Visual implements IVisual {
             .attr("d", zspreadLineGen);
 
         // Draw forecast line if we have stationary data
-        if (this.diffSeriesStationary && forecastZspreadErrorData.length > 0) {
-            const combinedData = [zspreadErrorDiffData[zspreadErrorDiffData.length - 1], ...forecastZspreadErrorData];
+        if (this.diffSeriesStationary && forecastZspreadDiffData.length > 0) {
+            const combinedData = [zspreadDiffData[zspreadDiffData.length - 1], ...forecastZspreadDiffData];
             g.append("path")
                 .datum(combinedData)
                 .attr("fill", "none")
@@ -1027,13 +1073,12 @@ export class Visual implements IVisual {
             .attr("fill", this.diffSeriesStationary ? "green" : "red")
             .style("font-size", "12px")
             .text(this.diffSeriesStationary ? 
-                "β-only forecast applied" : 
+                "OU Error changes → Z-Spread forecast" : 
                 "Series non-stationary. No forecast.");
 
         // Add tooltip interaction with improved accuracy
         const tooltip = d3.select("#tooltip");
         
-        // Create a voronoi diagram for more accurate tooltip targeting
         g.append("rect")
             .attr("width", innerWidth)
             .attr("height", innerHeight)
@@ -1044,25 +1089,25 @@ export class Visual implements IVisual {
                 const bisect = d3.bisector<{inputdate: Date, value: number}, Date>(d => d.inputdate).left;
                 
                 // Find the index of the closest point BEFORE the mouse position
-                const index = bisect(zspreadErrorDiffData, mouseX) - 1;
+                const index = bisect(zspreadDiffData, mouseX) - 1;
                 
                 // Make sure the index is valid
-                if (index >= 0 && index < zspreadErrorDiffData.length) {
-                    const histPoint = zspreadErrorDiffData[index];
+                if (index >= 0 && index < zspreadDiffData.length) {
+                    const histPoint = zspreadDiffData[index];
                     
                     // Check if we're in the forecast region
-                    const lastHistDate = zspreadErrorDiffData[zspreadErrorDiffData.length - 1].inputdate;
+                    const lastHistDate = zspreadDiffData[zspreadDiffData.length - 1].inputdate;
                     
-                    if (mouseX > lastHistDate && this.diffSeriesStationary && forecastZspreadErrorData.length > 0) {
+                    if (mouseX > lastHistDate && this.diffSeriesStationary && forecastZspreadDiffData.length > 0) {
                         // We're in the forecast region - find the closest forecast point
-                        const forecastIndex = bisect(forecastZspreadErrorData, mouseX) - 1;
-                        if (forecastIndex >= 0 && forecastIndex < forecastZspreadErrorData.length) {
-                            const forecastPoint = forecastZspreadErrorData[forecastIndex];
+                        const forecastIndex = bisect(forecastZspreadDiffData, mouseX) - 1;
+                        if (forecastIndex >= 0 && forecastIndex < forecastZspreadDiffData.length) {
+                            const forecastPoint = forecastZspreadDiffData[forecastIndex];
                             tooltip
                                 .style("opacity", 1)
                                 .style("left", (event.pageX + 10) + "px")
                                 .style("top", (event.pageY - 10) + "px")
-                                .html(`Forecast Z-Spread Error (β × Z-Spread):<br/>
+                                .html(`Forecast Z-Spread Difference:<br/>
                                     Date: ${forecastPoint.inputdate.toLocaleDateString()}<br/>
                                     Value: ${forecastPoint.value.toFixed(4)}`);
                         }
@@ -1072,7 +1117,7 @@ export class Visual implements IVisual {
                             .style("opacity", 1)
                             .style("left", (event.pageX + 10) + "px")
                             .style("top", (event.pageY - 10) + "px")
-                            .html(`Historical Z-Spread Error Difference:<br/>
+                            .html(`Historical Z-Spread Difference:<br/>
                                 Date: ${histPoint.inputdate.toLocaleDateString()}<br/>
                                 Value: ${histPoint.value.toFixed(4)}`);
                     }
