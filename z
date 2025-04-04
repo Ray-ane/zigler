@@ -485,6 +485,12 @@ export class Visual implements IVisual {
 
     /**
      * Calculates the beta coefficient using covariance and variance
+     * 
+     * The beta coefficient represents the sensitivity of Z-Spread changes to Error changes:
+     * β = Cov(errorChange, zspreadChange) / Var(errorChange)
+     * 
+     * This is analogous to the slope in a linear regression:
+     * zspreadChange = β × errorChange
      */
     private calculateBeta(): { beta: number } {
         // Check if we have enough data points
@@ -503,26 +509,39 @@ export class Visual implements IVisual {
         const xMean = d3.mean(xValues) || 0;
         const yMean = d3.mean(yValues) || 0;
         
-        // Calculate covariance
+        // Calculate covariance: Cov(X,Y) = E[(X - E[X])(Y - E[Y])]
         let covariance = 0;
         for (let i = 0; i < xValues.length; i++) {
             covariance += (xValues[i] - xMean) * (yValues[i] - yMean);
         }
         covariance /= xValues.length;
         
-        // Calculate variance using d3
+        // Calculate variance using d3: Var(X) = E[(X - E[X])²]
         const variance = d3.variance(xValues) || 0;
         
         // Calculate beta = cov(x,y) / var(x)
+        // Ensure variance is not too close to zero to avoid division issues
         return { beta: Math.abs(variance) > 1e-10 ? covariance / variance : 0 };
     }
 
-    // Update the ADF test implementation with better comments
+    /**
+     * Implements the Augmented Dickey-Fuller test to check for stationarity
+     * 
+     * The ADF test null hypothesis is that the series has a unit root (non-stationary).
+     * We reject this hypothesis if the test statistic < threshold (e.g., < -3).
+     * 
+     * ADF equation: Δy_t = α + βy_{t-1} + ε_t
+     * where:
+     * - Δy_t is the first difference of series at time t
+     * - y_{t-1} is the lagged value
+     * - β = ρ - 1 where ρ is the autoregressive coefficient
+     * - α is the drift term
+     * - ε_t is the error term
+     * 
+     * If β < 0 significantly, we reject the unit root hypothesis, meaning series is stationary.
+     */
     private performADFTest = memoize((data: number[]): boolean => {
         if (data.length < 3) return false;
-        
-        // ADF test equation: Δy_t = α + βy_{t-1} + ε_t
-        // where β = ρ - 1 and ρ is the autoregressive coefficient
         
         // Create first difference series (Δy_t)
         const dX = data.slice(1).map((val, i) => val - data[i]);
@@ -540,7 +559,8 @@ export class Visual implements IVisual {
         const den = lagX.reduce((sum, val) => 
             sum + Math.pow(val - meanLag, 2), 0);
             
-        // Calculate slope coefficient β
+        // Calculate slope coefficient β (which equals ρ-1)
+        // If the process is stationary, ρ < 1, so β < 0
         const slope = num / den;
         
         // Calculate sum of squared residuals for standard error
@@ -561,6 +581,19 @@ export class Visual implements IVisual {
 
     /**
      * Calculates Ornstein-Uhlenbeck process parameters and forecasts
+     * 
+     * The OU process is defined by the SDE: dX_t = λ(μ - X_t)dt + σdW_t
+     * where:
+     * - λ (lambda) is the mean reversion rate
+     * - μ (mu) is the long-term mean
+     * - σ (sigma) is the volatility
+     * - W_t is a Wiener process (Brownian motion)
+     * 
+     * The discrete-time solution follows:
+     * X_{t+1} = X_t + λ(μ - X_t)Δt + σ√(Δt)ε_t
+     * which can be rewritten as:
+     * X_{t+1} = α*X_t + (1-α)*μ + noise
+     * where α = e^(-λΔt) is the auto-correlation coefficient
      */
     private calculateOUParameters(diffValues: number[], dates: Date[]): OUResults {
         // For insufficient data, return defaults
@@ -576,26 +609,31 @@ export class Visual implements IVisual {
         
         // Calculate time parameters
         const timeSpan = dates[dates.length - 1].getTime() - dates[0].getTime();
-        const delta = timeSpan / n;
-        const deltaDays = delta / (1000 * 60 * 60 * 24);
+        const delta = timeSpan / n;  // average time step in milliseconds
+        const deltaDays = delta / (1000 * 60 * 60 * 24);  // convert to days
         
         // Calculate auto-correlation coefficient
+        // For OU processes, α = e^(-λΔt) is the theoretical auto-correlation
+        // We estimate this from data first, then derive λ
         const deviations = diffValues.map(val => val - diffMean);
         const autoCorr = deviations.slice(1).reduce((sum, val, i) => 
             sum + val * deviations[i], 0) / deviations.slice(0, -1).reduce((sum, val) => 
             sum + val * val, 0);
         
-        // Ensure alpha is in valid range
+        // Ensure alpha is in valid range (-1, 1) to avoid numerical issues
         const alphaHat = Math.max(Math.min(autoCorr, 0.9999999), -0.9999999);
         
-        // Calculate lambda, mu, and sigma
+        // Calculate lambda from alpha: λ = -ln(α)/Δt
         const lambdaHat = -Math.log(alphaHat) / deltaDays;
         
-        // Calculate long-term mean from residuals
+        // Calculate long-term mean from residuals using the OU model properties
+        // For AR(1) process: X_t = α*X_{t-1} + (1-α)*μ + ε_t
+        // Solving for μ: μ = Σ(X_t - α*X_{t-1}) / (n*(1-α))
         const muHat = diffValues.slice(1).reduce((sum, val, i) => 
             sum + (val - alphaHat * diffValues[i]), 0) / (n * (1 - alphaHat));
         
-        // Calculate volatility
+        // Calculate volatility from residual variance
+        // In discrete time: Var(ε_t) = σ²*(1-e^(-2λΔt))/(2λ)
         const residuals = diffValues.slice(1).map((val, i) => 
             val - alphaHat * diffValues[i] - (1 - alphaHat) * muHat);
         const sumSq = residuals.reduce((sum, r) => sum + r * r, 0);
@@ -624,7 +662,13 @@ export class Visual implements IVisual {
             const nextDate = new Date(lastTime + i * delta);
             const alphaPow = Math.pow(alpha, i);
             
+            // Calculate mean forecast using OU properties:
+            // E[X_{t+i}|X_t] = μ + (X_t - μ)e^(-λ*i*Δt)
+            // where e^(-λ*i*Δt) = α^i
             const meanForecast = muHat + (lastDiff - muHat) * alphaPow;
+            
+            // Calculate variance of the forecast:
+            // Var[X_{t+i}|X_t] = (σ²/2λ)*(1 - e^(-2λ*i*Δt))
             const varForecast = (newSigma * newSigma) / (2 * newLambda) * (1 - Math.pow(alpha, 2 * i));
             const stdDev = Math.sqrt(varForecast);
             
@@ -640,12 +684,14 @@ export class Visual implements IVisual {
             
             // Add all forecast points
             forecastPoints.push({ ...basePoint, diff: meanForecast });
+            
+            // Add 95% confidence interval bounds (±1.96 standard deviations)
             upperBoundPoints.push({ ...basePoint, diff: meanForecast + 1.96 * stdDev });
             lowerBoundPoints.push({ ...basePoint, diff: meanForecast - 1.96 * stdDev });
         }
         
         return { lambda: newLambda, mu: muHat, sigma: newSigma, 
-                 forecastPoints, upperBoundPoints, lowerBoundPoints };
+                    forecastPoints, upperBoundPoints, lowerBoundPoints };
     }
 
     // Add utility methods for common chart operations
@@ -845,6 +891,14 @@ export class Visual implements IVisual {
 
     /**
      * Renders the Z-spread chart with historical data and forecasts
+     * 
+     * The forecasting approach:
+     * 1. Takes the OU process forecast for error differences
+     * 2. Calculates expected changes in error differences using the OU equation:
+     *    dX_t = λ(μ - X_t)dt
+     * 3. Applies the beta coefficient to translate error changes to Z-spread changes:
+     *    dZ_t = β * dX_t
+     * 4. Aggregates these changes to build the Z-spread forecast curve
      */
     private renderZspreadChart(
         g: d3.Selection<SVGGElement, unknown, null, undefined>,
@@ -922,9 +976,12 @@ export class Visual implements IVisual {
                     currentErrorDiff = point.diff;
                     
                     // Calculate expected change from OU process
+                    // This follows from the OU SDE: dX_t = λ(μ - X_t)dt
+                    // Expected change in error diff over the next step
                     const expectedErrorChange = lambda * (mu - prevErrorDiff) * delta;
                     
-                    // Apply beta to error change
+                    // Apply beta to error change: change in Z-spread = β * change in error
+                    // This is the key relationship that connects error forecasts to Z-spread forecasts
                     const zspreadChange = beta * expectedErrorChange;
                     currentZspreadDiff += zspreadChange;
                     
