@@ -479,7 +479,15 @@ export class Visual implements IVisual {
             return;
         }
 
-        // Calculate beta coefficient for the regression between changes in error_diff and zspread_diff
+        // Calculate beta coefficient for the relationship between 
+        // daily changes in error differences and zspread differences
+        // 
+        // The relationship is modeled as:
+        // zspread_diff_change = β × error_diff_change
+        // 
+        // This is a pure proportional relationship (forced through origin).
+        // The beta coefficient will be used to forecast zspread_diff based on
+        // forecasted changes in error_diff.
         const { beta } = this.calculateBeta();
 
         // Apply ADF test to check for stationarity of error_diff
@@ -500,67 +508,58 @@ export class Visual implements IVisual {
      * forecasted changes in error_diff.
      */
     private calculateBeta(): { beta: number } {
-        // Need at least 3 points to have 2 changes
-        if (this.diffSeries.length < 3) return { beta: 0.5 }; // Default to 0.5 if not enough data
+        // Need at least 2 points to have 1 change
+        if (this.diffSeries.length < 2) {
+            console.log('Not enough points for beta calculation');
+            return { beta: 0 };
+        }
 
-        // Skip first point which doesn't have meaningful change values
+        // Skip first point which doesn't have change values
         const changesData = this.diffSeries.slice(1);
         
-        // Log the data for debugging
-        console.log('Changes data for beta calculation:', 
-            changesData.map(d => ({ 
-                date: d.inputdate.toLocaleDateString(), 
-                errorChange: d.errorChange, 
-                zspreadChange: d.zspreadChange 
-            }))
-        );
+        console.log('Raw changes data length:', changesData.length);
+        console.log('First few data points:', changesData.slice(0, 3).map(d => ({ 
+            date: d.inputdate.toLocaleDateString(), 
+            errorChange: d.errorChange, 
+            zspreadChange: d.zspreadChange 
+        })));
 
-        // Check if we have valid changes to work with
-        const validChanges = changesData.filter(d => 
-            !isNaN(d.errorChange) && isFinite(d.errorChange) && 
-            !isNaN(d.zspreadChange) && isFinite(d.zspreadChange) &&
-            Math.abs(d.errorChange) > 1e-10 // Avoid near-zero values
-        );
+        // Direct calculation without filtering - use all available data
+        let sumErrorChangeSq = 0;
+        let sumErrorZspreadChangeProd = 0;
         
-        if (validChanges.length < 2) {
-            console.log('Not enough valid changes for beta calculation, using default');
-            return { beta: 0.5 }; // Default to 0.5 if not enough valid data
+        // Calculate sums directly without using means
+        for (let i = 0; i < changesData.length; i++) {
+            const errorChange = changesData[i].errorChange;
+            const zspreadChange = changesData[i].zspreadChange;
+            
+            sumErrorChangeSq += errorChange * errorChange;
+            sumErrorZspreadChangeProd += errorChange * zspreadChange;
+            
+            console.log(`Data point ${i}:`, {
+                errorChange,
+                zspreadChange,
+                errorChangeSq: errorChange * errorChange,
+                product: errorChange * zspreadChange,
+                runningSumErrorChangeSq: sumErrorChangeSq,
+                runningSumProduct: sumErrorZspreadChangeProd
+            });
         }
-
-        // Calculate means for error_diff change and zspread_diff change
-        const errorChangeMean = d3.mean(validChanges, d => d.errorChange) || 0;
-        const zspreadChangeMean = d3.mean(validChanges, d => d.zspreadChange) || 0;
         
-        console.log('Means:', { errorChangeMean, zspreadChangeMean });
-
-        // Calculate linear regression coefficient β (slope only)
-        // Using formula: β = Cov(X,Y)/Var(X)
-        // Where X is errorChange and Y is zspreadChange
-        let numerator = 0;   // Covariance between error_diff_change and zspread_diff_change
-        let denominator = 0; // Variance of error_diff_change
-        
-        validChanges.forEach(d => {
-            const errorChangeDev = d.errorChange - errorChangeMean;         // Deviation from mean for error diff change
-            const zspreadChangeDev = d.zspreadChange - zspreadChangeMean;   // Deviation from mean for zspread diff change
-            numerator += errorChangeDev * zspreadChangeDev;                 // Sum of products for covariance
-            denominator += errorChangeDev * errorChangeDev;                 // Sum of squares for variance
+        console.log('Sum calculations:', {
+            sumErrorChangeSq,
+            sumErrorZspreadChangeProd
         });
         
-        console.log('Beta calculation:', { numerator, denominator });
-
-        // Calculate beta (slope coefficient)
-        // If denominator is too close to zero, use a default value
-        let beta = 0.5; // Default value
-        if (Math.abs(denominator) > 1e-6) {
-            beta = numerator / denominator;
-            
-            // Ensure beta is reasonable - constrain to [-10, 10] range
-            beta = Math.max(-10, Math.min(10, beta));
+        // Calculate beta directly as sum(xy)/sum(x²)
+        // This is equivalent to the regression through origin
+        let beta = 0;
+        if (Math.abs(sumErrorChangeSq) > 1e-10) {
+            beta = sumErrorZspreadChangeProd / sumErrorChangeSq;
         }
         
-        console.log('Calculated beta:', beta);
+        console.log('Final beta calculation:', beta);
         
-        // Return only beta, no alpha
         return { beta };
     }
 
@@ -992,7 +991,7 @@ export class Visual implements IVisual {
         const { beta } = this.calculateBeta();
         this.beta = beta; // Store beta for display
         
-        console.log('Using beta:', beta);
+        console.log('Using beta for forecasting:', beta);
 
         // Prepare arrays for forecast data points
         let forecastZspreadDiffData: {inputdate: Date, value: number}[] = [];
@@ -1007,7 +1006,8 @@ export class Visual implements IVisual {
             console.log('OU results:', {
                 lambda: ouResults.lambda,
                 mu: ouResults.mu,
-                forecastPoints: ouResults.forecastPoints.map(p => ({ date: p.inputdate, diff: p.diff }))
+                sigma: ouResults.sigma,
+                forecastFirstPoint: ouResults.forecastPoints[0]
             });
             
             // Extract the last historical error difference value
@@ -1015,7 +1015,7 @@ export class Visual implements IVisual {
             // Extract the last historical z-spread difference value
             const lastZspreadDiff = this.diffSeries[this.diffSeries.length - 1].zspreadDiff;
             
-            console.log('Last values:', { lastErrorDiff, lastZspreadDiff });
+            console.log('Last historical values:', { lastErrorDiff, lastZspreadDiff });
             
             // Get the OU process parameters from the left chart
             const mu = ouResults.mu;          // Long-term mean for error_diff
@@ -1023,7 +1023,9 @@ export class Visual implements IVisual {
             
             // Calculate time step in days
             const lastTime = this.diffSeries[this.diffSeries.length - 1].inputdate.getTime();
-            const delta = (ouResults.forecastPoints[1].inputdate.getTime() - lastTime) / (1000 * 60 * 60 * 24);
+            const delta = ouResults.forecastPoints.length > 1 
+                ? (ouResults.forecastPoints[1].inputdate.getTime() - ouResults.forecastPoints[0].inputdate.getTime()) / (1000 * 60 * 60 * 24)
+                : 1; // default to 1 day if we can't calculate
             
             console.log('Time delta (days):', delta);
             
@@ -1032,57 +1034,57 @@ export class Visual implements IVisual {
             let currentErrorDiff = lastErrorDiff;
             
             // Generate zspread_diff forecasts using the OU error change model
-            forecastZspreadDiffData = ouResults.forecastPoints.map((forecastPoint, i) => {
-                if (i === 0) {
-                    // For the first forecast point, we need to use the OU prediction
-                    // Apply beta to the expected change from OU process
-                    // The expected change in error_diff according to OU is: λ(μ - X)dt
-                    const expectedErrorChange = lambda * (mu - lastErrorDiff) * delta;
-                    currentErrorDiff = forecastPoint.diff;
-                    
-                    console.log(`Forecast point ${i}:`, {
-                        expectedErrorChange,
-                        lastErrorDiff,
-                        forecast: forecastPoint.diff
-                    });
-                    
-                    // Apply beta to translate error change to zspread change
-                    const zspreadChange = beta * expectedErrorChange;
-                    currentZspreadDiff += zspreadChange;
-                    
-                    console.log(`  Resulting zspread change:`, {
-                        zspreadChange,
-                        newZspreadDiff: currentZspreadDiff
-                    });
-                } else {
-                    // For subsequent points, use the OU error_diff forecast from previous point
+            // First point is special - we need to connect from the last historical point
+            if (ouResults.forecastPoints.length > 0) {
+                const firstForecastPoint = ouResults.forecastPoints[0];
+                
+                // Expected change from OU process
+                const expectedErrorChange = lambda * (mu - lastErrorDiff) * delta;
+                
+                // Apply beta to translate error change to zspread change
+                const zspreadChange = beta * expectedErrorChange;
+                currentZspreadDiff += zspreadChange;
+                currentErrorDiff = firstForecastPoint.diff;
+                
+                console.log('First forecast point:', {
+                    expectedErrorChange,
+                    beta,
+                    zspreadChange,
+                    newZspreadDiff: currentZspreadDiff
+                });
+                
+                forecastZspreadDiffData.push({
+                    inputdate: firstForecastPoint.inputdate,
+                    value: currentZspreadDiff
+                });
+                
+                // Now process the rest of the forecast points
+                for (let i = 1; i < ouResults.forecastPoints.length; i++) {
+                    const forecastPoint = ouResults.forecastPoints[i];
                     const prevErrorDiff = currentErrorDiff;
                     currentErrorDiff = forecastPoint.diff;
                     
                     // Expected change from OU process at this step
                     const expectedErrorChange = lambda * (mu - prevErrorDiff) * delta;
                     
-                    console.log(`Forecast point ${i}:`, {
-                        expectedErrorChange,
-                        prevErrorDiff,
-                        forecast: forecastPoint.diff
-                    });
-                    
                     // Apply beta to translate error change to zspread change
                     const zspreadChange = beta * expectedErrorChange;
                     currentZspreadDiff += zspreadChange;
                     
-                    console.log(`  Resulting zspread change:`, {
+                    console.log(`Forecast point ${i}:`, {
+                        prevErrorDiff,
+                        currentErrorDiff: forecastPoint.diff,
+                        expectedErrorChange,
                         zspreadChange,
                         newZspreadDiff: currentZspreadDiff
                     });
+                    
+                    forecastZspreadDiffData.push({
+                        inputdate: forecastPoint.inputdate,
+                        value: currentZspreadDiff
+                    });
                 }
-                
-                return {
-                    inputdate: forecastPoint.inputdate,
-                    value: currentZspreadDiff
-                };
-            });
+            }
         }
 
         // Display the beta coefficient and explain the relationship
@@ -1097,21 +1099,25 @@ export class Visual implements IVisual {
         const dataForScales = this.diffSeriesStationary ? 
             [...zspreadDiffData, ...forecastZspreadDiffData] : zspreadDiffData;
 
-        // Log domain values for debugging
-        console.log('Chart y-domain values:', dataForScales.map(d => d.value));
+        console.log('Data for scales - count:', dataForScales.length);
+        if (dataForScales.length > 0) {
+            console.log('Data range:', {
+                min: d3.min(dataForScales, d => d.value),
+                max: d3.max(dataForScales, d => d.value)
+            });
+        }
         
-        // Create a proper y-scale based on actual data values
-        const yMin = d3.min(dataForScales, d => d.value) || 0;
-        const yMax = d3.max(dataForScales, d => d.value) || 1;
+        // Create a proper y-scale with appropriate padding
+        const values = dataForScales.map(d => d.value);
+        const yMin = d3.min(values) || 0;
+        const yMax = d3.max(values) || 1;
         
-        // Ensure the domain has some span
-        const domainPadding = Math.max(0.1, Math.abs(yMax - yMin) * 0.1);
+        // Ensure the domain has some span (at least 10% of the data range or 0.1, whichever is larger)
+        const range = Math.max(0.1, Math.abs(yMax - yMin));
+        const padding = range * 0.1; // 10% padding
         
         const zspreadYScale = d3.scaleLinear()
-            .domain([
-                yMin - domainPadding,
-                yMax + domainPadding
-            ])
+            .domain([yMin - padding, yMax + padding])
             .range([innerHeight, 0])
             .nice();
         
@@ -1132,11 +1138,12 @@ export class Visual implements IVisual {
             .style("stroke-dasharray", "0")
             .attr("d", zspreadLineGen);
 
-        // Draw forecast line if we have stationary data
+        // Draw forecast line if we have stationary data and forecast points
         if (this.diffSeriesStationary && forecastZspreadDiffData.length > 0) {
-            const combinedData = [zspreadDiffData[zspreadDiffData.length - 1], ...forecastZspreadDiffData];
+            const lastHistoricalPoint = zspreadDiffData[zspreadDiffData.length - 1];
+            const combinedData = [lastHistoricalPoint, ...forecastZspreadDiffData];
             
-            console.log('Combined forecast data:', combinedData);
+            console.log('Combined forecast data - count:', combinedData.length);
             
             g.append("path")
                 .datum(combinedData)
