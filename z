@@ -392,10 +392,8 @@ export class Visual implements IVisual {
         const selectedPair = this.dropdownPairs.value;
         if (!selectedPair) return;
         
-        // Parse selected bond pair
         const [selectedBond1, selectedBond2] = selectedPair.split(" vs ");
 
-        // Use caching for processed data to improve performance
         const cacheKey = `${selectedBond1}_${selectedBond2}_${this.allData.length}`;
         if (this.processedData.has(cacheKey)) {
             this.diffSeries = this.processedData.get(cacheKey)!;
@@ -405,13 +403,10 @@ export class Visual implements IVisual {
                 d.context1.trim().toUpperCase() === "ERROR" &&
                 (d.bond1.trim() === selectedBond1.trim() || d.bond1.trim() === selectedBond2.trim())
             );
-    
-            // Use Map for faster lookups instead of repeated array searches
-            // Store error, zspread_error, and zspread values for each bond by date
+
             const mapBond1 = new Map<string, {error: number, zspread_error: number, zspread: number}>();
             const mapBond2 = new Map<string, {error: number, zspread_error: number, zspread: number}>();
             
-            // Process data more efficiently with a single loop
             errorRows.forEach(d => {
                 const key = d.inputdate.toDateString();
                 const value = { 
@@ -426,19 +421,13 @@ export class Visual implements IVisual {
                     mapBond2.set(key, value);
                 }
             });
-    
-            // Compute difference series in a single pass
-            // For each date where both bonds have data, calculate:
-            // 1. Error difference (diff)
-            // 2. Z-spread error differences (zspreadDiff)
-            // 3. Raw Z-spread differences (zspreadRawDiff)
+
             this.diffSeries = [];
             mapBond1.forEach((val1, key) => {
                 if (mapBond2.has(key)) {
                     const val2 = mapBond2.get(key)!;
                     this.diffSeries.push({
                         inputdate: new Date(key),
-                        // Calculate bond2 minus bond1 for each metric
                         diff: val2.error - val1.error,
                         zspread1: val1.zspread_error,
                         zspread2: val2.zspread_error,
@@ -450,10 +439,8 @@ export class Visual implements IVisual {
                 }
             });
             
-            // Sort chronologically
             this.diffSeries.sort((a, b) => a.inputdate.getTime() - b.inputdate.getTime());
             
-            // Cache the processed data for future use
             this.processedData.set(cacheKey, this.diffSeries);
         }
 
@@ -463,10 +450,9 @@ export class Visual implements IVisual {
         }
 
         // Calculate beta coefficient for the regression between zspread and zspread_error
-        const { alpha, beta } = this.calculateBeta();
+        const { beta } = this.calculateBeta();
 
-        // Apply Augmented Dickey-Fuller test to check for stationarity
-        // This determines whether we can use the OU process for forecasting
+        // Apply ADF test to check for stationarity
         const diffs = this.diffSeries.map(d => d.diff);
         this.diffSeriesStationary = this.performADFTest(diffs);
         this.renderChart(this.diffSeriesStationary);
@@ -479,15 +465,12 @@ export class Visual implements IVisual {
      * The relationship is modeled as:
      * zspread_error_diff = β × zspread_diff
      * 
-     * This is a proportional relationship (forced through origin) without an intercept term (α).
+     * This is a pure proportional relationship (forced through origin).
      * The beta coefficient represents how changes in raw zspread translate to 
      * changes in zspread_error.
-     * 
-     * This approach is different from standard OLS regression as we're specifically
-     * setting alpha=0 to get a pure proportional relationship.
      */
-    private calculateBeta(): { alpha: number, beta: number } {
-        if (this.diffSeries.length < 2) return { alpha: 0, beta: 0 };
+    private calculateBeta(): { beta: number } {
+        if (this.diffSeries.length < 2) return { beta: 0 };
 
         // Calculate means for zspread raw difference and z-spread error difference
         const zspreadRawMean = d3.mean(this.diffSeries, d => d.zspreadRawDiff) || 0;
@@ -510,11 +493,8 @@ export class Visual implements IVisual {
         // If denominator is zero (no variance in X), return zero to avoid division by zero
         const beta = denominator !== 0 ? numerator / denominator : 0;
         
-        // Set alpha to 0 as requested (don't use intercept for forecasting)
-        // This creates a proportional relationship: Y = βX
-        const alpha = 0;
-
-        return { alpha, beta };
+        // Return only beta, no alpha
+        return { beta };
     }
 
     // Update the ADF test implementation with better comments
@@ -912,9 +892,6 @@ export class Visual implements IVisual {
      * 1. First forecasts raw zspread differences using the OU process
      * 2. Then calculates zspread_error forecasts using the simple formula:
      *    zspread_error_diff = β × zspread_diff
-     * 
-     * This approach enforces a proportional relationship between
-     * raw zspread and zspread_error, without an intercept term.
      */
     private renderZspreadChart(
         g: d3.Selection<SVGGElement, unknown, null, undefined>,
@@ -959,8 +936,8 @@ export class Visual implements IVisual {
             return;
         }
 
-        // Get beta coefficient for the proportional relationship
-        const { alpha, beta } = this.calculateBeta();
+        // Get beta coefficient for the proportional relationship - no alpha
+        const { beta } = this.calculateBeta();
         this.beta = beta; // Store beta for display
 
         // Prepare arrays for forecast data points
@@ -975,19 +952,11 @@ export class Visual implements IVisual {
             );
             
             // Step 1: Forecast raw zspread differences using the OU process
-            // We apply the same mean-reversion pattern to zspread as we do to errors
             forecastZspreadRawData = ouResults.forecastPoints.map((forecastPoint, i) => {
-                // Get the last observed value and the mean
                 const lastZspreadRawDiff = this.diffSeries[this.diffSeries.length - 1].zspreadRawDiff;
                 const zspreadRawMean = d3.mean(this.diffSeries, d => d.zspreadRawDiff) || 0;
                 
-                // Calculate the decay factor for the i-th forecast step
-                // This is e^(-λΔt) where Δt is the time step in days
                 const alphaPow = Math.pow(Math.exp(-ouResults.lambda * this.delta / (1000 * 60 * 60 * 24)), i);
-                
-                // OU forecast formula: μ + (X_last - μ) * e^(-λt)
-                // This represents mean reversion, where the forecast starts at the last value
-                // and gradually reverts toward the mean at a rate determined by lambda
                 const zspreadRawForecast = zspreadRawMean + (lastZspreadRawDiff - zspreadRawMean) * alphaPow;
                 
                 return {
@@ -996,11 +965,10 @@ export class Visual implements IVisual {
                 };
             });
             
-            // Step 2: Calculate zspread_error forecasts using the proportional relationship
+            // Step 2: Calculate zspread_error forecasts using pure beta coefficient
             // zspread_error_diff = β × zspread_diff
             forecastZspreadErrorData = forecastZspreadRawData.map(rawForecast => {
-                // Apply only beta: zspread_error_diff = β * zspread_diff
-                // We explicitly set alpha to 0 to force the line through the origin
+                // Simple proportional relationship using only beta
                 const zspreadErrorForecast = beta * rawForecast.value;
                 
                 return {
@@ -1018,11 +986,10 @@ export class Visual implements IVisual {
             .style("font-size", "12px")
             .text(`β = ${beta.toFixed(4)} (zspread_error = β × zspread)`);
 
-        // Create scales for the chart - combine historical and forecast data for domain calculation
+        // Create scales for the chart
         const dataForScales = this.diffSeriesStationary ? 
             [...zspreadErrorDiffData, ...forecastZspreadErrorData] : zspreadErrorDiffData;
 
-        // Time scale for x-axis
         const zspreadXScale = d3.scaleTime()
             .domain([
                 d3.min(dataForScales, d => d.inputdate)!,
@@ -1030,7 +997,6 @@ export class Visual implements IVisual {
             ])
             .range([0, innerWidth]);
 
-        // Linear scale for y-axis
         const zspreadYScale = d3.scaleLinear()
             .domain([
                 d3.min(dataForScales, d => d.value)!,
@@ -1039,11 +1005,11 @@ export class Visual implements IVisual {
             .range([innerHeight, 0])
             .nice();
 
-        // Create line generator for smooth curves
+        // Create line generator
         const zspreadLineGen = d3.line<{inputdate: Date, value: number}>()
             .x(d => zspreadXScale(d.inputdate))
             .y(d => zspreadYScale(d.value))
-            .curve(d3.curveMonotoneX);  // Use monotone interpolation for smoother lines
+            .curve(d3.curveMonotoneX);
 
         // Draw historical zspread_error line
         g.append("path")
@@ -1056,7 +1022,6 @@ export class Visual implements IVisual {
 
         // Draw forecast line if we have stationary data
         if (this.diffSeriesStationary && forecastZspreadErrorData.length > 0) {
-            // Combine the last historical point with forecast points for a continuous line
             const combinedData = [zspreadErrorDiffData[zspreadErrorDiffData.length - 1], ...forecastZspreadErrorData];
             g.append("path")
                 .datum(combinedData)
@@ -1067,7 +1032,7 @@ export class Visual implements IVisual {
                 .attr("d", zspreadLineGen);
         }
 
-        // Add status text to show whether forecasting was possible
+        // Add status text
         g.append("text")
             .attr("x", innerWidth - 10)
             .attr("y", -10)
@@ -1078,66 +1043,52 @@ export class Visual implements IVisual {
                 "β-only forecast applied" : 
                 "Series non-stationary. No forecast.");
 
-        // Add tooltip interaction
+        // Add tooltip interaction with improved accuracy
         const tooltip = d3.select("#tooltip");
+        
+        // Create a voronoi diagram for more accurate tooltip targeting
         g.append("rect")
             .attr("width", innerWidth)
             .attr("height", innerHeight)
             .style("fill", "none")
             .style("pointer-events", "all")
             .on("mousemove", (event) => {
-                // Extract mouse position and convert to date
                 const mouseX = zspreadXScale.invert(d3.pointer(event)[0]);
-                // Create bisector function to find closest point to mouse position
                 const bisect = d3.bisector<{inputdate: Date, value: number}, Date>(d => d.inputdate).left;
                 
-                // Find nearest points in historical and forecast data
-                const histIndex = bisect(zspreadErrorDiffData, mouseX);
-                const histPoint = zspreadErrorDiffData[histIndex];
+                // Find the index of the closest point BEFORE the mouse position
+                const index = bisect(zspreadErrorDiffData, mouseX) - 1;
                 
-                let tooltipContent = "";
-                
-                if (this.diffSeriesStationary && forecastZspreadErrorData.length > 0) {
-                    const forecastIndex = bisect(forecastZspreadErrorData, mouseX);
-                    const forecastPoint = forecastZspreadErrorData[forecastIndex];
+                // Make sure the index is valid
+                if (index >= 0 && index < zspreadErrorDiffData.length) {
+                    const histPoint = zspreadErrorDiffData[index];
                     
-                    // Determine whether to show historical or forecast data in tooltip
-                    // based on which point is closer to the mouse
-                    if (histPoint && forecastPoint) {
-                        const histDist = Math.abs(histPoint.inputdate.getTime() - mouseX.getTime());
-                        const forecastDist = Math.abs(forecastPoint.inputdate.getTime() - mouseX.getTime());
-                        
-                        if (histDist < forecastDist) {
-                            tooltipContent = `Historical Z-Spread Error Difference:<br/>
-                                Date: ${histPoint.inputdate.toLocaleDateString()}<br/>
-                                Value: ${histPoint.value.toFixed(4)}`;
-                        } else {
-                            tooltipContent = `Forecast Z-Spread Error (β × Z-Spread):<br/>
-                                Date: ${forecastPoint.inputdate.toLocaleDateString()}<br/>
-                                Value: ${forecastPoint.value.toFixed(4)}`;
+                    // Check if we're in the forecast region
+                    const lastHistDate = zspreadErrorDiffData[zspreadErrorDiffData.length - 1].inputdate;
+                    
+                    if (mouseX > lastHistDate && this.diffSeriesStationary && forecastZspreadErrorData.length > 0) {
+                        // We're in the forecast region - find the closest forecast point
+                        const forecastIndex = bisect(forecastZspreadErrorData, mouseX) - 1;
+                        if (forecastIndex >= 0 && forecastIndex < forecastZspreadErrorData.length) {
+                            const forecastPoint = forecastZspreadErrorData[forecastIndex];
+                            tooltip
+                                .style("opacity", 1)
+                                .style("left", (event.pageX + 10) + "px")
+                                .style("top", (event.pageY - 10) + "px")
+                                .html(`Forecast Z-Spread Error (β × Z-Spread):<br/>
+                                    Date: ${forecastPoint.inputdate.toLocaleDateString()}<br/>
+                                    Value: ${forecastPoint.value.toFixed(4)}`);
                         }
-                    } else if (histPoint) {
-                        tooltipContent = `Historical Z-Spread Error Difference:<br/>
-                            Date: ${histPoint.inputdate.toLocaleDateString()}<br/>
-                            Value: ${histPoint.value.toFixed(4)}`;
-                    } else if (forecastPoint) {
-                        tooltipContent = `Forecast Z-Spread Error (β × Z-Spread):<br/>
-                            Date: ${forecastPoint.inputdate.toLocaleDateString()}<br/>
-                            Value: ${forecastPoint.value.toFixed(4)}`;
+                    } else {
+                        // We're in the historical region
+                        tooltip
+                            .style("opacity", 1)
+                            .style("left", (event.pageX + 10) + "px")
+                            .style("top", (event.pageY - 10) + "px")
+                            .html(`Historical Z-Spread Error Difference:<br/>
+                                Date: ${histPoint.inputdate.toLocaleDateString()}<br/>
+                                Value: ${histPoint.value.toFixed(4)}`);
                     }
-                } else if (histPoint) {
-                    tooltipContent = `Historical Z-Spread Error Difference:<br/>
-                        Date: ${histPoint.inputdate.toLocaleDateString()}<br/>
-                        Value: ${histPoint.value.toFixed(4)}`;
-                }
-
-                // Display tooltip if we have content
-                if (tooltipContent) {
-                    tooltip
-                        .style("opacity", 1)
-                        .style("left", (event.pageX + 10) + "px")
-                        .style("top", (event.pageY - 10) + "px")
-                        .html(tooltipContent);
                 }
             })
             .on("mouseout", () => tooltip.style("opacity", 0));
