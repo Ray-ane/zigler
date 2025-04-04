@@ -1112,51 +1112,60 @@ export class Visual implements IVisual {
         // Add tooltip interaction
         const tooltip = d3.select("#tooltip");
         
+        // Create overlay for historical line
         g.append("rect")
             .attr("width", innerWidth)
             .attr("height", innerHeight)
+            .attr("class", "historical-overlay")
             .style("fill", "none")
             .style("pointer-events", "all")
             .on("mousemove", (event) => {
-                const mouseX = xScale.invert(d3.pointer(event)[0]);
+                const mouseX = d3.pointer(event)[0];
+                const mouseDate = xScale.invert(mouseX);
                 
-                // Find closest historical and forecast points
-                const histIndex = Math.min(bisectDate(allPoints.historical, mouseX) - 1, 
-                    allPoints.historical.length - 1);
-                const forecastIndex = Math.min(bisectDate(allPoints.forecast, mouseX) - 1,
-                    allPoints.forecast.length - 1);
+                // Use binary search to find closest historical point
+                const index = d3.bisector<DiffPoint, Date>(d => d.inputdate).left(allPoints.historical, mouseDate) - 1;
                 
-                if (histIndex >= 0 && forecastIndex >= 0) {
-                    // Determine if historical or forecast point is closer
-                    const histPoint = allPoints.historical[histIndex];
-                    const forecastPoint = allPoints.forecast[forecastIndex];
-                    const upperPoint = allPoints.upperBound[forecastIndex];
-                    const lowerPoint = allPoints.lowerBound[forecastIndex];
+                // Ensure index is valid
+                if (index >= 0 && index < allPoints.historical.length) {
+                    const point = allPoints.historical[index];
                     
-                    const histDist = Math.abs(histPoint.inputdate.getTime() - mouseX.getTime());
-                    const forecastDist = Math.abs(forecastPoint.inputdate.getTime() - mouseX.getTime());
+                    // Check if we're on the historical part
+                    const lastHistoricalDate = allPoints.historical[allPoints.historical.length - 1].inputdate;
                     
-                    let content;
-                    if (histDist < forecastDist) {
-                        content = `Historical Data:<br/>
-                            Date: ${histPoint.inputdate.toLocaleDateString()}<br/>
-                            Value: ${histPoint.diff.toFixed(4)}`;
+                    // If we're to the right of the last historical point, don't show historical tooltip
+                    if (mouseDate <= lastHistoricalDate) {
+                        tooltip
+                            .style("opacity", 1)
+                            .style("left", `${event.pageX + 10}px`)
+                            .style("top", `${event.pageY - 10}px`)
+                            .html(`Historical Data:<br/>
+                                Date: ${point.inputdate.toLocaleDateString()}<br/>
+                                Value: ${point.diff.toFixed(4)}`);
                     } else {
-                        content = `Forecast:<br/>
-                            Date: ${forecastPoint.inputdate.toLocaleDateString()}<br/>
-                            Value: ${forecastPoint.diff.toFixed(4)}<br/>
-                            Upper Bound: ${upperPoint.diff.toFixed(4)}<br/>
-                            Lower Bound: ${lowerPoint.diff.toFixed(4)}`;
+                        // We're in forecast territory, find closest forecast point
+                        const forecastIndex = d3.bisector<DiffPoint, Date>(d => d.inputdate).left(allPoints.forecast, mouseDate) - 1;
+                        if (forecastIndex >= 0 && forecastIndex < allPoints.forecast.length) {
+                            const forecastPoint = allPoints.forecast[forecastIndex];
+                            const upperPoint = allPoints.upperBound[forecastIndex];
+                            const lowerPoint = allPoints.lowerBound[forecastIndex];
+                            
+                            tooltip
+                                .style("opacity", 1)
+                                .style("left", `${event.pageX + 10}px`)
+                                .style("top", `${event.pageY - 10}px`)
+                                .html(`Forecast:<br/>
+                                    Date: ${forecastPoint.inputdate.toLocaleDateString()}<br/>
+                                    Value: ${forecastPoint.diff.toFixed(4)}<br/>
+                                    Upper Bound: ${upperPoint.diff.toFixed(4)}<br/>
+                                    Lower Bound: ${lowerPoint.diff.toFixed(4)}`);
+                        }
                     }
-                    
-                    tooltip
-                        .style("opacity", 1)
-                        .style("left", `${event.pageX + 10}px`)
-                        .style("top", `${event.pageY - 10}px`)
-                        .html(content);
                 }
             })
-            .on("mouseout", hideTooltip);
+            .on("mouseout", () => {
+                tooltip.style("opacity", 0);
+            });
     }
 
     /**
@@ -1191,6 +1200,8 @@ export class Visual implements IVisual {
             .text("ADF failed: Series non-stationary. OU not applied.");
 
         // Add tooltip interaction
+        const tooltip = d3.select("#tooltip");
+        
         g.append("rect")
             .attr("width", innerWidth)
             .attr("height", innerHeight)
@@ -1198,10 +1209,31 @@ export class Visual implements IVisual {
             .style("pointer-events", "all")
             .on("mousemove", (event) => {
                 const mouseX = xScale.invert(d3.pointer(event)[0]);
-                const index = Math.min(Math.max(0, bisectDate(this.diffSeries, mouseX) - 1), 
-                    this.diffSeries.length - 1);
-                showTooltip(event, this.diffSeries[index]);
+                
+                // Find closest point directly
+                let closestPoint: DiffPoint | null = null;
+                let minDist = Infinity;
+                
+                for (const point of this.diffSeries) {
+                    const dist = Math.abs(point.inputdate.getTime() - mouseX.getTime());
+                    if (dist < minDist) {
+                        minDist = dist;
+                        closestPoint = point;
+                    }
+                }
+                
+                if (closestPoint) {
+                    tooltip
+                        .style("opacity", 1)
+                        .style("left", `${event.pageX + 10}px`)
+                        .style("top", `${event.pageY - 10}px`)
+                        .html(`Historical Data:<br/>
+                            Date: ${closestPoint.inputdate.toLocaleDateString()}<br/>
+                            Value: ${closestPoint.diff.toFixed(4)}`);
+                }
             })
-            .on("mouseout", hideTooltip);
+            .on("mouseout", () => {
+                tooltip.style("opacity", 0);
+            });
     }
 }
