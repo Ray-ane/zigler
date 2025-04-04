@@ -284,7 +284,40 @@ export class Visual implements IVisual {
         } else {
             return null;
         }
+        
+        // DEBUG: Log the entire row to check all available values
+        console.log(`DEBUG: Full row data:`, row);
 
+        // Log values to determine which column contains the zspread data
+        console.log(`Checking possible zspread columns:
+            Column 7: ${row[7]}
+            Column 8: ${row[8]}
+            Column 9: ${row[9]}
+            Column 10: ${row[10]}
+        `);
+        
+        // Try to detect which column actually contains zspread data
+        let zspreadValue = 0;
+        let zspreadColumn = 8; // Default column
+        
+        // Check if column 7 might contain the zspread value
+        if (row[7] !== undefined && row[7] !== null && !isNaN(parseFloat(String(row[7])))) {
+            zspreadValue = parseFloat(String(row[7]));
+            zspreadColumn = 7;
+            console.log(`Using column 7 for zspread: ${zspreadValue}`);
+        } 
+        // If not, try column 8
+        else if (row[8] !== undefined && row[8] !== null && !isNaN(parseFloat(String(row[8])))) {
+            zspreadValue = parseFloat(String(row[8]));
+            console.log(`Using column 8 for zspread: ${zspreadValue}`);
+        }
+        // If not, try column 9
+        else if (row[9] !== undefined && row[9] !== null && !isNaN(parseFloat(String(row[9])))) {
+            zspreadValue = parseFloat(String(row[9]));
+            zspreadColumn = 9;
+            console.log(`Using column 9 for zspread: ${zspreadValue}`);
+        }
+        
         return {
             inputdate: dateVal,
             context1: row[1]?.toString() || "",
@@ -293,7 +326,7 @@ export class Visual implements IVisual {
             bond1: row[4]?.toString() || "",
             bond2: row[5]?.toString() || "",
             error: +row[6],
-            zspread: +row[8] || 0  // Keep just the raw zspread values (index 8)
+            zspread: zspreadValue // Use the detected zspread value
         };
     }
 
@@ -398,6 +431,12 @@ export class Visual implements IVisual {
         );
 
         console.log(`Found ${errorRows.length} error rows for the selected bonds`);
+        
+        // DEBUG: Check raw zspread values in the filtered rows
+        console.log("DEBUG: Sample of raw data rows with zspread values:");
+        errorRows.slice(0, 5).forEach(row => {
+            console.log(`Bond: ${row.bond1}, Date: ${row.inputdate.toLocaleDateString()}, Error: ${row.error}, ZSpread: ${row.zspread}`);
+        });
 
         const mapBond1 = new Map<string, {error: number, zspread: number}>();
         const mapBond2 = new Map<string, {error: number, zspread: number}>();
@@ -413,6 +452,25 @@ export class Visual implements IVisual {
                 mapBond1.set(key, value);
             } else if (d.bond1.trim() === selectedBond2.trim()) {
                 mapBond2.set(key, value);
+            }
+        });
+
+        // DEBUG: Check values in the maps
+        console.log("DEBUG: Sample values from Bond1 map:");
+        let count = 0;
+        mapBond1.forEach((value, key) => {
+            if (count < 5) {
+                console.log(`Date: ${key}, Error: ${value.error}, ZSpread: ${value.zspread}`);
+                count++;
+            }
+        });
+        
+        console.log("DEBUG: Sample values from Bond2 map:");
+        count = 0;
+        mapBond2.forEach((value, key) => {
+            if (count < 5) {
+                console.log(`Date: ${key}, Error: ${value.error}, ZSpread: ${value.zspread}`);
+                count++;
             }
         });
 
@@ -437,6 +495,11 @@ export class Visual implements IVisual {
             const key = commonDates[i];
             const val1 = mapBond1.get(key)!;
             const val2 = mapBond2.get(key)!;
+            
+            // DEBUG: Log raw values being used for difference calculation
+            console.log(`DEBUG: Raw values for ${key}:`);
+            console.log(`  Bond1: error=${val1.error}, zspread=${val1.zspread}`);
+            console.log(`  Bond2: error=${val2.error}, zspread=${val2.zspread}`);
             
             // Calculate differences for current day
             const errorDiff = val2.error - val1.error;
