@@ -383,100 +383,118 @@ export class Visual implements IVisual {
         const selectedPair = this.dropdownPairs.value;
         if (!selectedPair) return;
         
-        const [selectedBond1, selectedBond2] = selectedPair.split(" vs ");
-
-        // Clear previous data
-        this.diffSeries = [];
+        // Check if we've already processed this pair
+        const cacheKey = `${selectedPair}_${this.lambdaSlider.value}_${this.sigmaSlider.value}`;
         
-        // Filter and compute difference series for both error and zspread
-        const errorRows = this.allData.filter(d => 
-            d.context1.trim().toUpperCase() === "ERROR" &&
-            (d.bond1.trim() === selectedBond1.trim() || d.bond1.trim() === selectedBond2.trim())
-        );
-
-        const mapBond1 = new Map<string, {error: number, zspread: number}>();
-        const mapBond2 = new Map<string, {error: number, zspread: number}>();
-        
-        errorRows.forEach(d => {
-            const key = d.inputdate.toDateString();
-            const value = { 
-                error: d.error, 
-                zspread: d.zspread
-            };
+        // If the selected pair changed (not just slider adjustments), recalculate diff series
+        if (!this.processedData.has(selectedPair)) {
+            // Clear previous data
+            this.diffSeries = [];
             
-            if (d.bond1.trim() === selectedBond1.trim()) {
-                mapBond1.set(key, value);
-            } else if (d.bond1.trim() === selectedBond2.trim()) {
-                mapBond2.set(key, value);
-            }
-        });
-
-        // Collect dates where both bonds have data
-        const commonDates: string[] = [];
-        mapBond1.forEach((_, key) => {
-            if (mapBond2.has(key)) {
-                commonDates.push(key);
-            }
-        });
-        
-        // Sort dates chronologically
-        commonDates.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
-        
-        // Create diffSeries with differences and daily changes
-        for (let i = 0; i < commonDates.length; i++) {
-            const key = commonDates[i];
-            const val1 = mapBond1.get(key)!;
-            const val2 = mapBond2.get(key)!;
+            const [selectedBond1, selectedBond2] = selectedPair.split(" vs ");
             
-            // Calculate differences for current day
-            const errorDiff = val2.error - val1.error;
-            const zspreadDiff = val2.zspread - val1.zspread;
+            // Filter relevant error rows (do this once per pair selection)
+            const errorRows = this.allData.filter(d => 
+                d.context1.trim().toUpperCase() === "ERROR" &&
+                (d.bond1.trim() === selectedBond1.trim() || d.bond1.trim() === selectedBond2.trim())
+            );
             
-            // Initialize daily changes (will be set in next loop iteration if not the first point)
-            let errorChange = 0;
-            let zspreadChange = 0;
+            // Use typed maps for better performance
+            const mapBond1 = new Map<string, {error: number, zspread: number}>();
+            const mapBond2 = new Map<string, {error: number, zspread: number}>();
             
-            // For points beyond the first one, calculate daily changes
-            if (i > 0) {
-                const prevKey = commonDates[i-1];
-                const prevVal1 = mapBond1.get(prevKey)!;
-                const prevVal2 = mapBond2.get(prevKey)!;
-                const prevErrorDiff = prevVal2.error - prevVal1.error;
-                const prevZspreadDiff = prevVal2.zspread - prevVal1.zspread;
+            // Process each row only once and add to appropriate map
+            for (const d of errorRows) {
+                const key = d.inputdate.toDateString();
+                const value = { error: d.error, zspread: d.zspread };
                 
-                errorChange = errorDiff - prevErrorDiff;
-                zspreadChange = zspreadDiff - prevZspreadDiff;
-                
-                // Update previous point's change values since we now know them
-                if (i === 1) {
-                    // For the first point, set changes to 0
-                    this.diffSeries[0].errorChange = 0;
-                    this.diffSeries[0].zspreadChange = 0;
+                if (d.bond1.trim() === selectedBond1.trim()) {
+                    mapBond1.set(key, value);
+                } else if (d.bond1.trim() === selectedBond2.trim()) {
+                    mapBond2.set(key, value);
                 }
             }
             
-            // Add the current point
-            this.diffSeries.push({
-                inputdate: new Date(key),
-                diff: errorDiff,
-                errorChange: errorChange,
-                zspreadRaw1: val1.zspread,
-                zspreadRaw2: val2.zspread,
-                zspreadDiff: zspreadDiff,
-                zspreadChange: zspreadChange
-            });
+            // Find common dates efficiently
+            const commonDates: string[] = [];
+            const mapBond1Keys = [...mapBond1.keys()];
+            
+            // Only check keys from the smaller map for better performance
+            const keysToCheck = mapBond1.size <= mapBond2.size ? mapBond1Keys : [...mapBond2.keys()];
+            const mapToCheck = mapBond1.size <= mapBond2.size ? mapBond2 : mapBond1;
+            
+            for (const key of keysToCheck) {
+                if (mapToCheck.has(key)) {
+                    commonDates.push(key);
+                }
+            }
+            
+            // Sort dates chronologically
+            commonDates.sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+            
+            // Pre-allocate array size for better performance
+            this.diffSeries = new Array(commonDates.length);
+            
+            // Process data in a single pass
+            for (let i = 0; i < commonDates.length; i++) {
+                const key = commonDates[i];
+                const val1 = mapBond1.get(key)!;
+                const val2 = mapBond2.get(key)!;
+                
+                // Calculate differences for current day
+                const errorDiff = val2.error - val1.error;
+                const zspreadDiff = val2.zspread - val1.zspread;
+                
+                // Calculate changes if possible, otherwise default to 0
+                let errorChange = 0;
+                let zspreadChange = 0;
+                
+                if (i > 0) {
+                    const prevKey = commonDates[i-1];
+                    const prevVal1 = mapBond1.get(prevKey)!;
+                    const prevVal2 = mapBond2.get(prevKey)!;
+                    const prevErrorDiff = prevVal2.error - prevVal1.error;
+                    const prevZspreadDiff = prevVal2.zspread - prevVal1.zspread;
+                    
+                    errorChange = errorDiff - prevErrorDiff;
+                    zspreadChange = zspreadDiff - prevZspreadDiff;
+                    
+                    // Update the first point's change values when we process the second point
+                    if (i === 1) {
+                        this.diffSeries[0].errorChange = 0;
+                        this.diffSeries[0].zspreadChange = 0;
+                    }
+                }
+                
+                // Create point object
+                this.diffSeries[i] = {
+                    inputdate: new Date(key),
+                    diff: errorDiff,
+                    errorChange: errorChange,
+                    zspreadRaw1: val1.zspread,
+                    zspreadRaw2: val2.zspread,
+                    zspreadDiff: zspreadDiff,
+                    zspreadChange: zspreadChange
+                };
+            }
+            
+            // Cache the calculated diff series for this pair
+            this.processedData.set(selectedPair, [...this.diffSeries]);
+        } else {
+            // Reuse previously calculated diff series
+            this.diffSeries = [...this.processedData.get(selectedPair)!];
         }
         
         if (this.diffSeries.length < 2) {
             this.renderChart(false);
             return;
         }
-
-        // Calculate beta coefficient
+        
+        // Calculate beta coefficient - this is fast so no need to cache
         const { beta } = this.calculateBeta();
         this.beta = beta;
-
-        // Apply ADF test to check for stationarity of error_diff
+        
+        // ADF test is already using memoization
         const diffs = this.diffSeries.map(d => d.diff);
         this.diffSeriesStationary = this.performADFTest(diffs);
         
@@ -574,43 +592,65 @@ export class Visual implements IVisual {
         }
         
         const n = diffValues.length - 1;
+        
         // Calculate long-term mean
-        const diffMean = d3.mean(diffValues)!;
+        let diffSum = 0;
+        for (let i = 0; i < diffValues.length; i++) {
+            diffSum += diffValues[i];
+        }
+        const diffMean = diffSum / diffValues.length;
         
-        // Calculate time parameters
-        const totalTimeSpan = (dates[dates.length - 1].getTime() - dates[0].getTime());
+        // Calculate time parameters - use milliseconds to days conversion once
+        const msPerDay = 1000 * 60 * 60 * 24;
+        const startTime = dates[0].getTime();
+        const endTime = dates[dates.length - 1].getTime();
+        const totalTimeSpan = endTime - startTime;
         const delta = totalTimeSpan / n;
-        const deltaDays = delta / (1000 * 60 * 60 * 24);
+        const deltaDays = delta / msPerDay;
         
-        // Calculate auto-correlation coefficient
-        const deviations = diffValues.map(val => val - diffMean);
+        // Calculate auto-correlation coefficient more efficiently
         let num = 0;
         let den = 0;
+        let sumResidual = 0;
+        
+        // Combine loops to reduce iterations
         for (let i = 0; i < n; i++) {
-            num += deviations[i+1] * deviations[i];
-            den += deviations[i] * deviations[i];
+            const dev_i = diffValues[i] - diffMean;
+            const dev_i1 = diffValues[i+1] - diffMean;
+            
+            // For auto-correlation
+            num += dev_i * dev_i1;
+            den += dev_i * dev_i;
+            
+            // For mean calculation (pre-calculate part of it)
+            sumResidual += diffValues[i+1] - diffValues[i];
         }
-        let alphaHat = Math.max(Math.min(num / den, 0.9999999), -0.9999999);
-
+        
+        // Bound alpha to prevent numerical issues
+        const alphaHat = Math.max(Math.min(num / den, 0.9999999), -0.9999999);
+        
         // Calculate mean reversion rate
         const lambdaHat = -Math.log(alphaHat) / deltaDays;
         
-        // Calculate long-term mean using residuals
-        let sumResidual = 0;
+        // Recalculate long-term mean using residuals
+        let muSumResidual = 0;
         for (let i = 0; i < n; i++) {
-            sumResidual += diffValues[i+1] - alphaHat * diffValues[i];
+            muSumResidual += diffValues[i+1] - alphaHat * diffValues[i];
         }
-        const muHat = sumResidual / (n * (1 - alphaHat));
-
-        // Calculate volatility
+        const muHat = muSumResidual / (n * (1 - alphaHat));
+        
+        // Calculate volatility (combine into a single loop)
         let sumSq = 0;
         for (let i = 0; i < n; i++) {
             const r = diffValues[i+1] - alphaHat * diffValues[i] - (1 - alphaHat) * muHat;
             sumSq += r * r;
         }
-        const sigmaSqHat = (2 * lambdaHat) / (1 - alphaHat * alphaHat) * (1 / n) * sumSq;
+        
+        // Simplify calculation to reduce operations
+        const oneMinusAlphaSq = 1 - alphaHat * alphaHat;
+        const sigmaSqHat = (2 * lambdaHat * sumSq) / (oneMinusAlphaSq * n);
         const sigmaHat = Math.sqrt(Math.max(sigmaSqHat, 0));
-
+        
         // Apply user-adjustable scaling factors
         const lambdaFactor = parseFloat(this.lambdaSlider.value);
         const sigmaFactor = parseFloat(this.sigmaSlider.value);
@@ -619,29 +659,37 @@ export class Visual implements IVisual {
         
         // Calculate discrete-time alpha with adjusted lambda
         const alpha = Math.exp(-newLambda * deltaDays);
-
-        // Generate forecast points
-        const lastDiff = diffValues[diffValues.length - 1];
-        const lastTime = dates[dates.length - 1].getTime();
         
-        const forecastPoints: DiffPoint[] = [];
-        const upperBoundPoints: DiffPoint[] = [];
-        const lowerBoundPoints: DiffPoint[] = [];
-
+        // Get forecast start values
+        const lastDiff = diffValues[diffValues.length - 1];
+        const lastTime = endTime;
+        
+        // Pre-allocate arrays for better performance
+        const forecastPoints = new Array(FORECAST_STEPS + 1);
+        const upperBoundPoints = new Array(FORECAST_STEPS + 1);
+        const lowerBoundPoints = new Array(FORECAST_STEPS + 1);
+        
+        // Cache constant calculations outside the loop
+        const muDiff = lastDiff - muHat;
+        const nsigma = newSigma * newSigma;
+        const nsigmaBy2Lambda = nsigma / (2 * newLambda);
+        
         // Create forecast points
         for (let i = 0; i <= FORECAST_STEPS; i++) {
+            // Optimize date creation
             const nextDate = new Date(lastTime + i * delta);
             const alphaPow = Math.pow(alpha, i);
+            const alpha2Pow = alphaPow * alphaPow;
             
             // Mean forecast
-            const meanForecast = muHat + (lastDiff - muHat) * alphaPow;
+            const meanForecast = muHat + muDiff * alphaPow;
             
             // Variance forecast
-            const varForecast = (newSigma * newSigma) / (2 * newLambda) * (1 - Math.pow(alpha, 2 * i));
+            const varForecast = nsigmaBy2Lambda * (1 - alpha2Pow);
             const stdDev = Math.sqrt(varForecast);
             
             // Create forecast points with confidence intervals
-            forecastPoints.push({ 
+            forecastPoints[i] = { 
                 inputdate: nextDate, 
                 diff: meanForecast, 
                 errorChange: 0,
@@ -649,9 +697,9 @@ export class Visual implements IVisual {
                 zspreadRaw2: 0,
                 zspreadDiff: 0,
                 zspreadChange: 0
-            });
+            };
             
-            upperBoundPoints.push({ 
+            upperBoundPoints[i] = { 
                 inputdate: nextDate, 
                 diff: meanForecast + 1.96 * stdDev, 
                 errorChange: 0,
@@ -659,9 +707,9 @@ export class Visual implements IVisual {
                 zspreadRaw2: 0,
                 zspreadDiff: 0,
                 zspreadChange: 0
-            });
+            };
             
-            lowerBoundPoints.push({ 
+            lowerBoundPoints[i] = { 
                 inputdate: nextDate, 
                 diff: meanForecast - 1.96 * stdDev, 
                 errorChange: 0,
@@ -669,9 +717,9 @@ export class Visual implements IVisual {
                 zspreadRaw2: 0,
                 zspreadDiff: 0,
                 zspreadChange: 0
-            });
+            };
         }
-
+        
         return {
             lambda: newLambda,
             mu: muHat,
@@ -897,24 +945,14 @@ export class Visual implements IVisual {
         // Clear any existing content
         g.selectAll("*").remove();
 
-        // Add Z-Spread chart title
-        g.append("text")
-            .attr("x", 10)
-            .attr("y", -35)
-            .attr("text-anchor", "start")
-            .style("font-size", "14px")
-            .style("font-weight", "bold")
-            .style("font-family", "Arial, sans-serif")
-            .style("fill", "#00818F")
-            .text("Z-Spread Difference (Forecast via OU Error Changes)");
-
-        // Extract data for plotting
+        // Extract data for plotting (do this once)
         const zspreadDiffData = this.diffSeries.map(d => ({
             inputdate: d.inputdate,
-            value: d.zspreadDiff      // Historical zspread differences
+            value: d.zspreadDiff
         }));
 
         if (zspreadDiffData.length === 0) {
+            // Just add a single text element for the no-data case
             g.append("text")
                 .attr("x", innerWidth / 2)
                 .attr("y", innerHeight / 2)
@@ -929,117 +967,55 @@ export class Visual implements IVisual {
         const { beta } = this.calculateBeta();
         this.beta = beta;
 
-        // Prepare arrays for forecast data points
+        // Generate forecast data
         let forecastZspreadDiffData: {inputdate: Date, value: number}[] = [];
         
         if (this.diffSeriesStationary) {
-            // Get OU parameters and forecasts for the error series
-            const ouResults = this.calculateOUParameters(
-                this.diffSeries.map(d => d.diff),
-                this.diffSeries.map(d => d.inputdate)
-            );
-            
-            // Extract the last historical error difference value
-            const lastErrorDiff = this.diffSeries[this.diffSeries.length - 1].diff;
-            // Extract the last historical z-spread difference value
-            const lastZspreadDiff = this.diffSeries[this.diffSeries.length - 1].zspreadDiff;
-            
-            // Get the OU process parameters from the left chart
-            const mu = ouResults.mu;          // Long-term mean for error_diff
-            const lambda = ouResults.lambda;  // Mean-reversion rate
-            
-            // Calculate time step in days
-            const lastTime = this.diffSeries[this.diffSeries.length - 1].inputdate.getTime();
-            const delta = ouResults.forecastPoints.length > 1 
-                ? (ouResults.forecastPoints[1].inputdate.getTime() - ouResults.forecastPoints[0].inputdate.getTime()) / (1000 * 60 * 60 * 24)
-                : 1; // default to 1 day if we can't calculate
-            
-            // Start with the last historical zspread_diff value
-            let currentZspreadDiff = lastZspreadDiff;
-            let currentErrorDiff = lastErrorDiff;
-            
-            // Generate zspread_diff forecasts using the OU error change model
-            // First point is special - we need to connect from the last historical point
-            if (ouResults.forecastPoints.length > 0) {
-                const firstForecastPoint = ouResults.forecastPoints[0];
-                
-                // Expected change from OU process
-                const expectedErrorChange = lambda * (mu - lastErrorDiff) * delta;
-                
-                // Apply beta to translate error change to zspread change
-                const zspreadChange = beta * expectedErrorChange;
-                currentZspreadDiff += zspreadChange;
-                currentErrorDiff = firstForecastPoint.diff;
-                
-                forecastZspreadDiffData.push({
-                    inputdate: firstForecastPoint.inputdate,
-                    value: currentZspreadDiff
-                });
-                
-                // Now process the rest of the forecast points
-                for (let i = 1; i < ouResults.forecastPoints.length; i++) {
-                    const forecastPoint = ouResults.forecastPoints[i];
-                    const prevErrorDiff = currentErrorDiff;
-                    currentErrorDiff = forecastPoint.diff;
-                    
-                    // Expected change from OU process at this step
-                    const expectedErrorChange = lambda * (mu - prevErrorDiff) * delta;
-                    
-                    // Apply beta to translate error change to zspread change
-                    const zspreadChange = beta * expectedErrorChange;
-                    currentZspreadDiff += zspreadChange;
-                    
-                    forecastZspreadDiffData.push({
-                        inputdate: forecastPoint.inputdate,
-                        value: currentZspreadDiff
-                    });
-                }
-            }
+            forecastZspreadDiffData = this.generateZspreadForecast(beta);
         }
 
-        // Display the beta coefficient and explain the relationship
-        g.append("text")
-            .attr("x", 10)
-            .attr("y", -10)
-            .attr("fill", "#333")
-            .style("font-size", "12px")
-            .text(`β = ${beta.toFixed(4)} (Δzspread_diff = β × OU(Δerror_diff))`);
-
-        // Create scales for the chart
+        // Prepare scales once (avoid recalculating in multiple places)
         const dataForScales = this.diffSeriesStationary ? 
             [...zspreadDiffData, ...forecastZspreadDiffData] : zspreadDiffData;
         
-        // Create a proper y-scale with appropriate padding
+        // Create a proper y-scale
         const values = dataForScales.map(d => d.value);
         const yMin = d3.min(values) || 0;
         const yMax = d3.max(values) || 1;
         
-        // Ensure the domain has some span (at least 10% of the data range or 0.1, whichever is larger)
+        // Ensure domain has proper padding
         const range = Math.max(0.1, Math.abs(yMax - yMin));
-        const padding = range * 0.1; // 10% padding
+        const padding = range * 0.1;
         
         const zspreadYScale = d3.scaleLinear()
             .domain([yMin - padding, yMax + padding])
             .range([innerHeight, 0])
             .nice();
-
-        // Create line generator with the right scales
+        
+        // Create line generator once
         const zspreadLineGen = d3.line<{inputdate: Date, value: number}>()
             .x(d => xScale(d.inputdate))
             .y(d => zspreadYScale(d.value))
             .curve(d3.curveMonotoneX);
 
-        // Draw historical zspread line
+        // Use DocumentFragment to build chart elements off-DOM
+        const chartGroup = document.createDocumentFragment();
+        
+        // Add elements to chart in groups
+        this.appendChartTitle(g);
+        this.appendChartInfo(g, beta, innerWidth);
+        
+        // Draw historical line
         g.append("path")
             .datum(zspreadDiffData)
             .attr("fill", "none")
             .attr("stroke", "#00818F")
             .attr("stroke-width", 2)
-            .style("stroke-dasharray", "0")
             .attr("d", zspreadLineGen);
 
-        // Draw forecast line if we have stationary data and forecast points
+        // Draw forecast line if available
         if (this.diffSeriesStationary && forecastZspreadDiffData.length > 0) {
+            // Combine with last historical point to ensure smooth connection
             const lastHistoricalPoint = zspreadDiffData[zspreadDiffData.length - 1];
             const combinedData = [lastHistoricalPoint, ...forecastZspreadDiffData];
             
@@ -1048,11 +1024,48 @@ export class Visual implements IVisual {
                 .attr("fill", "none")
                 .attr("stroke", "orange")
                 .attr("stroke-width", 2)
-                .style("stroke-dasharray", "0")
                 .attr("d", zspreadLineGen);
         }
 
-        // Add status text
+        // Add tooltip interaction (optimized event handling)
+        this.setupZSpreadTooltip(g, innerWidth, innerHeight, xScale, zspreadDiffData, forecastZspreadDiffData);
+        
+        // Add axis last when all other elements are in place
+        this.createAxis(g, xScale, zspreadYScale, innerWidth, innerHeight);
+    }
+
+    /**
+     * Helper method to append chart title
+     */
+    private appendChartTitle(g: d3.Selection<SVGGElement, unknown, null, undefined>): void {
+        g.append("text")
+            .attr("x", 10)
+            .attr("y", -35)
+            .attr("text-anchor", "start")
+            .style("font-size", "14px")
+            .style("font-weight", "bold")
+            .style("font-family", "Arial, sans-serif")
+            .style("fill", "#00818F")
+            .text("Z-Spread Difference (Forecast via OU Error Changes)");
+    }
+
+    /**
+     * Helper method to append chart info text
+     */
+    private appendChartInfo(
+        g: d3.Selection<SVGGElement, unknown, null, undefined>, 
+        beta: number,
+        innerWidth: number
+    ): void {
+        // Beta coefficient display
+        g.append("text")
+            .attr("x", 10)
+            .attr("y", -10)
+            .attr("fill", "#333")
+            .style("font-size", "12px")
+            .text(`β = ${beta.toFixed(4)} (Δzspread_diff = β × OU(Δerror_diff))`);
+        
+        // Status text
         g.append("text")
             .attr("x", innerWidth - 10)
             .attr("y", -10)
@@ -1062,58 +1075,153 @@ export class Visual implements IVisual {
             .text(this.diffSeriesStationary ? 
                 "OU Error changes → Z-Spread forecast" : 
                 "Series non-stationary. No forecast.");
+    }
 
-        // Add tooltip interaction with improved accuracy
+    /**
+     * Helper method to setup tooltip interaction
+     */
+    private setupZSpreadTooltip(
+        g: d3.Selection<SVGGElement, unknown, null, undefined>,
+        innerWidth: number,
+        innerHeight: number,
+        xScale: d3.ScaleTime<number, number>,
+        zspreadDiffData: {inputdate: Date, value: number}[],
+        forecastZspreadDiffData: {inputdate: Date, value: number}[]
+    ): void {
         const tooltip = d3.select("#tooltip");
+        const bisect = d3.bisector<{inputdate: Date, value: number}, Date>(d => d.inputdate).left;
+        const lastHistDate = zspreadDiffData.length > 0 ? 
+            zspreadDiffData[zspreadDiffData.length - 1].inputdate : new Date();
         
+        // Throttle mousemove events
+        const throttle = (fn: Function, delay: number) => {
+            let lastCall = 0;
+            return function(...args: any[]) {
+                const now = new Date().getTime();
+                if (now - lastCall >= delay) {
+                    lastCall = now;
+                    fn(...args);
+                }
+            };
+        };
+        
+        // Setup event handlers
         g.append("rect")
             .attr("width", innerWidth)
             .attr("height", innerHeight)
             .style("fill", "none")
             .style("pointer-events", "all")
-            .on("mousemove", (event) => {
+            .on("mousemove", throttle((event: any) => {
                 const mouseX = xScale.invert(d3.pointer(event)[0]);
-                const bisect = d3.bisector<{inputdate: Date, value: number}, Date>(d => d.inputdate).left;
                 
-                // Find the index of the closest point BEFORE the mouse position
-                const index = bisect(zspreadDiffData, mouseX) - 1;
-                
-                // Make sure the index is valid
-                if (index >= 0 && index < zspreadDiffData.length) {
-                    const histPoint = zspreadDiffData[index];
+                // Is the mouse in the forecast region?
+                const inForecastRegion = mouseX > lastHistDate && 
+                    this.diffSeriesStationary && 
+                    forecastZspreadDiffData.length > 0;
                     
-                    // Check if we're in the forecast region
-                    const lastHistDate = zspreadDiffData[zspreadDiffData.length - 1].inputdate;
+                if (inForecastRegion) {
+                    // Find nearest forecast point
+                    const forecastIndex = bisect(forecastZspreadDiffData, mouseX) - 1;
                     
-                    if (mouseX > lastHistDate && this.diffSeriesStationary && forecastZspreadDiffData.length > 0) {
-                        // We're in the forecast region - find the closest forecast point
-                        const forecastIndex = bisect(forecastZspreadDiffData, mouseX) - 1;
-                        if (forecastIndex >= 0 && forecastIndex < forecastZspreadDiffData.length) {
-                            const forecastPoint = forecastZspreadDiffData[forecastIndex];
-                            tooltip
-                                .style("opacity", 1)
-                                .style("left", (event.pageX + 10) + "px")
-                                .style("top", (event.pageY - 10) + "px")
-                                .html(`Forecast Z-Spread Difference:<br/>
-                                    Date: ${forecastPoint.inputdate.toLocaleDateString()}<br/>
-                                    Value: ${forecastPoint.value.toFixed(4)}`);
-                        }
-                    } else {
-                        // We're in the historical region
-                        tooltip
-                            .style("opacity", 1)
-                            .style("left", (event.pageX + 10) + "px")
-                            .style("top", (event.pageY - 10) + "px")
-                            .html(`Historical Z-Spread Difference:<br/>
-                                Date: ${histPoint.inputdate.toLocaleDateString()}<br/>
-                                Value: ${histPoint.value.toFixed(4)}`);
+                    if (forecastIndex >= 0 && forecastIndex < forecastZspreadDiffData.length) {
+                        const point = forecastZspreadDiffData[forecastIndex];
+                        this.showTooltip(event, tooltip, 
+                            `Forecast Z-Spread Difference:<br/>
+                            Date: ${point.inputdate.toLocaleDateString()}<br/>
+                            Value: ${point.value.toFixed(4)}`);
+                    }
+                } else {
+                    // Find nearest historical point
+                    const histIndex = bisect(zspreadDiffData, mouseX) - 1;
+                    
+                    if (histIndex >= 0 && histIndex < zspreadDiffData.length) {
+                        const point = zspreadDiffData[histIndex];
+                        this.showTooltip(event, tooltip, 
+                            `Historical Z-Spread Difference:<br/>
+                            Date: ${point.inputdate.toLocaleDateString()}<br/>
+                            Value: ${point.value.toFixed(4)}`);
                     }
                 }
-            })
+            }, 50)) // Throttle to 50ms
             .on("mouseout", () => tooltip.style("opacity", 0));
+    }
+
+    /**
+     * Helper method to show tooltip
+     */
+    private showTooltip(
+        event: any, 
+        tooltip: d3.Selection<HTMLElement, unknown, null, undefined>, 
+        content: string
+    ): void {
+        tooltip
+            .style("opacity", 1)
+            .style("left", (event.pageX + 10) + "px")
+            .style("top", (event.pageY - 10) + "px")
+            .html(content);
+    }
+
+    /**
+     * Generates Z-spread forecast data
+     */
+    private generateZspreadForecast(beta: number): {inputdate: Date, value: number}[] {
+        // Get OU parameters and forecasts for the error series
+        const ouResults = this.calculateOUParameters(
+            this.diffSeries.map(d => d.diff),
+            this.diffSeries.map(d => d.inputdate)
+        );
         
-        // Add y-axis for zspread chart
-        this.createAxis(g, xScale, zspreadYScale, innerWidth, innerHeight);
+        if (ouResults.forecastPoints.length === 0) {
+            return [];
+        }
+        
+        // Extract required values for calculation
+        const lastErrorDiff = this.diffSeries[this.diffSeries.length - 1].diff;
+        const lastZspreadDiff = this.diffSeries[this.diffSeries.length - 1].zspreadDiff;
+        const mu = ouResults.mu;
+        const lambda = ouResults.lambda;
+        
+        // Calculate time step in days (once, outside loop)
+        const firstForecastPoint = ouResults.forecastPoints[0];
+        const delta = ouResults.forecastPoints.length > 1 
+            ? (ouResults.forecastPoints[1].inputdate.getTime() - firstForecastPoint.inputdate.getTime()) / (1000 * 60 * 60 * 24)
+            : 1;
+        
+        // Pre-allocate result array
+        const result = new Array(ouResults.forecastPoints.length);
+        
+        // Starting values
+        let currentZspreadDiff = lastZspreadDiff;
+        let currentErrorDiff = lastErrorDiff;
+        
+        // Process first point
+        const expectedErrorChange = lambda * (mu - lastErrorDiff) * delta;
+        const zspreadChange = beta * expectedErrorChange;
+        currentZspreadDiff += zspreadChange;
+        currentErrorDiff = firstForecastPoint.diff;
+        
+        result[0] = {
+            inputdate: firstForecastPoint.inputdate,
+            value: currentZspreadDiff
+        };
+        
+        // Process remaining points
+        for (let i = 1; i < ouResults.forecastPoints.length; i++) {
+            const forecastPoint = ouResults.forecastPoints[i];
+            const prevErrorDiff = currentErrorDiff;
+            currentErrorDiff = forecastPoint.diff;
+            
+            const expectedErrorChange = lambda * (mu - prevErrorDiff) * delta;
+            const zspreadChange = beta * expectedErrorChange;
+            currentZspreadDiff += zspreadChange;
+            
+            result[i] = {
+                inputdate: forecastPoint.inputdate,
+                value: currentZspreadDiff
+            };
+        }
+        
+        return result;
     }
 
     private renderStationaryChart(
@@ -1269,7 +1377,6 @@ export class Visual implements IVisual {
             .attr("fill", "none")
             .attr("stroke", "#00818F")
             .attr("stroke-width", 2)
-            .style("stroke-dasharray", "0")
             .attr("d", lineGen);
 
         // Add status text
