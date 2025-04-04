@@ -887,10 +887,11 @@ export class Visual implements IVisual {
         const { beta } = this.calculateBeta();
         this.beta = beta;
 
-        // Generate forecasts if series is stationary
+        // Generate forecasts if series is stationary AND beta is positive
         let allData = [...zspreadDiffData];
+        const canForecast = this.diffSeriesStationary && beta > 0;
         
-        if (this.diffSeriesStationary) {
+        if (canForecast) {
             // Calculate OU parameters
             const ouResults = this.calculateOUParameters(
                 this.diffSeries.map(d => d.diff),
@@ -941,9 +942,9 @@ export class Visual implements IVisual {
         g.append("text")
             .attr("x", 10)
             .attr("y", -10)
-            .attr("fill", "#333")
+            .attr("fill", beta > 0 ? "#333" : "red")
             .style("font-size", "12px")
-            .text(`Sensitivity: β = ${beta.toFixed(4)} (When Error changes by 1, Z-Spread changes by ${beta.toFixed(4)})`);
+            .text(`β = ${beta.toFixed(2)}`);
 
         // Calculate scale domain with padding
         const values = allData.map(d => d.value);
@@ -972,7 +973,7 @@ export class Visual implements IVisual {
             .attr("d", zspreadLineGen);
 
         // Draw forecast line if available
-        if (this.diffSeriesStationary && allData.length > zspreadDiffData.length) {
+        if (canForecast && allData.length > zspreadDiffData.length) {
             const forecastData = allData.filter((d, i) => 
                 i === zspreadDiffData.length - 1 || !d.isHistorical);
             
@@ -989,11 +990,11 @@ export class Visual implements IVisual {
             .attr("x", innerWidth - 10)
             .attr("y", -10)
             .attr("text-anchor", "end")
-            .attr("fill", this.diffSeriesStationary ? "green" : "red")
+            .attr("fill", canForecast ? "green" : "red")
             .style("font-size", "12px")
-            .text(this.diffSeriesStationary ? 
-                `Forecast active: When Error changes by 1, Z-Spread changes by ${beta.toFixed(4)}` : 
-                "No forecast: Data not suitable for prediction");
+            .text(canForecast ? 
+                `Forecast active: β = ${beta.toFixed(2)}` : 
+                beta <= 0 ? "No forecast: β is negative" : "No forecast: Data not suitable for prediction");
 
         // Add tooltip interaction
         const tooltip = d3.select("#tooltip");
