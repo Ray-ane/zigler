@@ -968,6 +968,7 @@ export class Visual implements IVisual {
             if (ouResults.forecastPoints.length > 0) {
                 let currentZspreadDiff = lastZspreadDiff;
                 let currentErrorDiff = lastErrorDiff;
+                let prevZspreadChange = 0;
                 
                 // Process all forecast points
                 ouResults.forecastPoints.forEach((point, i) => {
@@ -983,7 +984,14 @@ export class Visual implements IVisual {
                     // Apply beta to error change: change in Z-spread = β * change in error
                     // This is the key relationship that connects error forecasts to Z-spread forecasts
                     const zspreadChange = beta * expectedErrorChange;
-                    currentZspreadDiff += zspreadChange;
+                    
+                    // Incorporate previous Z-spread change along with the new calculated change
+                    // This ensures we properly model the momentum in Z-spread movements
+                    const totalZspreadChange = prevZspreadChange + zspreadChange;
+                    currentZspreadDiff += totalZspreadChange;
+                    
+                    // Store current change for next iteration
+                    prevZspreadChange = zspreadChange;
                     
                     // Add to forecast data
                     allData.push({
