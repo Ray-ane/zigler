@@ -1,0 +1,17 @@
+Cumulative Value by Year (Flattened) :=
+VAR ContextDate = MAX( 'DimCalendar'[Date] )
+VAR LastValidDate =
+    IF( ContextDate < TODAY(),
+        ContextDate,
+        TODAY()
+    )
+VAR ContextYear = YEAR( ContextDate )
+RETURN
+CALCULATE(
+    SUM( FactTable[Value] ),
+    FILTER(
+        ALL( 'DimCalendar' ),
+        'DimCalendar'[Year] = ContextYear
+        && 'DimCalendar'[Date] <= LastValidDate
+    )
+)
