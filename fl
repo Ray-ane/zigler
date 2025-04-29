@@ -1,17 +1,9 @@
-Cumulative Value by Year (Flattened) :=
-VAR ContextDate = MAX( 'DimCalendar'[Date] )
-VAR LastValidDate =
-    IF( ContextDate < TODAY(),
-        ContextDate,
-        TODAY()
-    )
-VAR ContextYear = YEAR( ContextDate )
-RETURN
+Cumulative Sales by Year :=
 CALCULATE(
-    SUM( FactTable[Value] ),
+    SUM( Sales[SalesAmount] ),             // or your [Total Sales] measure
     FILTER(
-        ALL( 'DimCalendar' ),
-        'DimCalendar'[Year] = ContextYear
-        && 'DimCalendar'[Date] <= LastValidDate
+        ALL( 'Date'[Date] ),               // ignore any current date filters
+        'Date'[Date] <= MAX( 'Date'[Date] )    // up to current row’s date
+        && YEAR( 'Date'[Date] ) = YEAR( MAX( 'Date'[Date] ) ) 
     )
 )
