@@ -1,9 +1,9 @@
-Cumulative Sales by Year :=
+Cumulative Sales YTD 2 :=
+VAR _LastFactDate =
+    CALCULATE( MAX( Sales[OrderDate] ), ALL( Sales ) )
+RETURN
 CALCULATE(
-    SUM( Sales[SalesAmount] ),             // or your [Total Sales] measure
-    FILTER(
-        ALL( 'Date'[Date] ),               // ignore any current date filters
-        'Date'[Date] <= MAX( 'Date'[Date] )    // up to current row’s date
-        && YEAR( 'Date'[Date] ) = YEAR( MAX( 'Date'[Date] ) ) 
-    )
+    [Total Sales],
+    DATESYTD( DimCalendar[Date] ),
+    DimCalendar[Date] <= _LastFactDate
 )
