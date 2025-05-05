@@ -39,3 +39,37 @@ cursor.fast_executemany = True
 cursor.executemany(sql, params)
 conn.commit()
 conn.close()
+
+
+
+
+
+
+
+
+
+
+CREATE OR ALTER PROCEDURE dbo.InsertDynamic
+  @TargetTable SYSNAME,      -- the table you want to hit
+  @Id          INT,          
+  @Name        NVARCHAR(100),
+  @Created     DATETIME      
+AS
+BEGIN
+  SET NOCOUNT ON;
+
+  DECLARE @sql NVARCHAR(MAX)
+    = N'INSERT INTO '
+      + QUOTENAME(@TargetTable)
+      + N' ([Id],[Name],[Created])'
+      + N' VALUES (@Id,@Name,@Created);';
+
+  EXEC sp_executesql
+    @sql,
+    N'@Id INT,@Name NVARCHAR(100),@Created DATETIME',
+    @Id      = @Id,
+    @Name    = @Name,
+    @Created = @Created;
+END
+GO
+
