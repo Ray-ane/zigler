@@ -1,9 +1,12 @@
-Cumulative Sales YTD 2 :=
-VAR _LastFactDate =
-    CALCULATE( MAX( Sales[OrderDate] ), ALL( Sales ) )
-RETURN
-CALCULATE(
-    [Total Sales],
-    DATESYTD( DimCalendar[Date] ),
-    DimCalendar[Date] <= _LastFactDate
+
+WITH CTE_Duplicates AS (
+    SELECT 
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY [date], id, isin 
+            ORDER BY (SELECT NULL)  -- or order by a column to prefer one row
+        ) AS rn
+    FROM your_table_name
 )
+DELETE FROM CTE_Duplicates
+WHERE rn > 1;
