@@ -1,0 +1,47 @@
+**Subject:** Request for USD Futures (DOL) Long/Short Positions by Investor Type via API
+
+---
+
+**To:** [dados@b3.com.br](mailto:dados@b3.com.br)
+**Cc:** [suporte@b3.com.br](mailto:suporte@b3.com.br)
+
+---
+
+Dear B3 Data Services Team,
+
+I hope you’re well. My name is **\[Your Name]**, and I represent **\[Your Company]**, where we develop quantitative trading models that rely on detailed derivatives positioning data.
+
+I would like to inquire about accessing, via API or data feed, the **daily long and short open-interest breakdown for the USD Futures contract (DOL), segmented by investor type** (e.g. Institutional, Financial Institutions, Non-Residents, Retail, Others). Specifically:
+
+1. **Endpoint Details**
+
+   * Does B3 offer a REST API endpoint (or SFTP/XML/CSV feed) that returns, for each DOL contract expiry, the number of long contracts and short contracts held by each investor category?
+   * If available, could you share the endpoint URL(s), required query parameters (e.g. date, symbol, expiry), and sample request/response payloads?
+
+2. **Authentication & Access**
+
+   * What is the process to register for developer access (sandbox) and subsequently obtain production credentials?
+   * Which authentication method is used (e.g. OAuth2 client-credentials), and are there any VPN or dedicated-link requirements?
+
+3. **Data Delivery & Formats**
+
+   * Supported output formats (JSON, CSV, XML) and any options for bulk downloads or end-of-day file delivery.
+   * If there’s a proprietary feed (e.g. “PNP”) that includes this per-contract, per-investor-type data, please advise on the specifications and commercial terms.
+
+4. **Commercial Terms & Onboarding**
+
+   * Pricing structure (subscription tiers, per-call fees, minimum commitments).
+   * Estimated timeline from agreement signature to data access.
+   * Availability of technical documentation, Swagger/UI portal, or onboarding support.
+
+Access to the DOL long/short investor-type breakdown is critical for our risk analytics and strategy calibration. If you need any additional details about our intended usage or technical environment, please let me know.
+
+Thank you in advance for your assistance. I look forward to your guidance on how to proceed with obtaining this data.
+
+Best regards,
+
+\[Your Name]
+\[Your Position]
+\[Your Company]
+\[Your Email]
+\[Your Phone]
